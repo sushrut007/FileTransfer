@@ -67,3 +67,12 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Ignore all bin and obj folders across the repo
+**/bin/
+**/obj/
+
+# Ignore the FileTransfer folder inside FileTransferPackingProject
+FileTransfer/FileTransfer/FileTransferPackingProject/FileTransfer/translations/
+
+
