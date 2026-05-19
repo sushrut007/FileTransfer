@@ -8,7 +8,7 @@ int main(int argc, char* argv[])
     // Set application properties for proper cleanup
     app.setApplicationName("File Transfer Manager");
     app.setApplicationVersion("1.0.0");
-    app.setQuitOnLastWindowClosed(false);  // Allow tray to keep app alive
+    //app.setQuitOnLastWindowClosed(false);  // Allow tray to keep app alive
 
     FileTransfer window;
     window.show();
