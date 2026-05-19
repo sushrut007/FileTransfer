@@ -1,1249 +1,1161 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+
 #include "FileTransfer.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QFormLayout>
 #include <QGroupBox>
+#include <QSplitter>
+#include <QScrollBar>
 #include <QHeaderView>
 #include <QFileDialog>
-#include <QStandardPaths>
-#include <QMessageBox>
-#include <QSystemTrayIcon>
-#include <QMenu>
-#include <QAction>
-#include <QSettings>
-#include <QDesktopServices>
-#include <QUrl>
-#include <QDateTime>
-#include <QApplication>
-#include <QFile>
 #include <QFileInfo>
+#include <QTextStream>
+#include <QDateTime>
+#include <QMessageBox>
+#include <QStyle>
+#include <QTimer>
+#include <QClipboard>
 #include <QDebug>
-#include <QPlainTextEdit>
-#include <QSplitter>
+
+static const char* kColorDebug = "#9E9E9E";
+static const char* kColorInfo = "#4FC3F7";
+static const char* kColorWarning = "#FFB74D";
+static const char* kColorCritical = "#EF5350";
+
+enum TCol {
+    TC_DIR = 0,
+    TC_ID,
+    TC_NAME,
+    TC_SIZE,
+    TC_PEER,
+    TC_STATUS,
+    TC_PROGRESS,
+    TC_COUNT
+};
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
 
 FileTransfer::FileTransfer(QWidget* parent)
     : QMainWindow(parent)
-    , m_tabWidget(nullptr)
-    , m_incomingTable(nullptr)
-    , m_activeTransfersTable(nullptr)
-    , m_completedTable(nullptr)
-    , m_peersTable(nullptr)
-    , m_logsEdit(nullptr)
-    , m_clearLogsBtn(nullptr)
-    , m_serverUrlEdit(nullptr)
-    , m_roomIdEdit(nullptr)
-    , m_passwordEdit(nullptr)
-    , m_connectBtn(nullptr)
-    , m_disconnectBtn(nullptr)
-    , m_trayIcon(nullptr)
-    , m_signalingClient(nullptr)
-    , m_fileTransferManager(nullptr)
-    , m_isConnected(false)
 {
-    ui.setupUi(this);
-    setupUI();
-    createTrayIcon();
-    loadSettings();
+    setWindowTitle(QStringLiteral("File Transfer Client"));
+    setMinimumSize(1200, 720);
+    buildUi();
 
-    setWindowTitle(QStringLiteral("File Transfer Manager"));
-    setWindowIcon(QIcon(QStringLiteral(":/icons/app.png")));
-    resize(1200, 800);
+    qRegisterMetaType<LogHandler::Level>();
+    qRegisterMetaType<FileTransferManager::TransferInfo>();
 
-    m_savePath = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    m_savePathEdit->setText(m_savePath);
-
-    // Setup logging
-    LogHandler::instance()->install();
     connect(LogHandler::instance(), &LogHandler::logLine,
         this, &FileTransfer::onLogLine, Qt::QueuedConnection);
 
-    qInfo() << "[UI] File Transfer Manager initialized";
+    qInfo() << "[UI] client ready – fill in credentials and click Connect";
 }
 
-FileTransfer::~FileTransfer()
+// ---------------------------------------------------------------------------
+// UI construction  (unchanged – reproduced in full for completeness)
+// ---------------------------------------------------------------------------
+
+void FileTransfer::buildUi()
 {
-    saveSettings();
-}
+    setStyleSheet(QStringLiteral(R"(
+        QMainWindow, QWidget {
+            background-color: #1E1E2E; color: #CDD6F4;
+            font-family: "Segoe UI", sans-serif; font-size: 13px;
+        }
+        QGroupBox {
+            border: 1px solid #45475A; border-radius: 6px;
+            margin-top: 10px; padding: 8px;
+            font-weight: bold; color: #89B4FA;
+        }
+        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+        QLineEdit, QComboBox {
+            background-color: #313244; border: 1px solid #45475A;
+            border-radius: 4px; padding: 4px 8px; color: #CDD6F4;
+        }
+        QLineEdit:focus, QComboBox:focus { border-color: #89B4FA; }
+        QLineEdit:read-only { color: #A6E3A1; background-color: #1E1E2E;
+                              border-color: #313244; }
+        QComboBox::drop-down {
+            border: none; width: 24px;
+            background-color: #45475A;
+            border-top-right-radius: 4px;
+            border-bottom-right-radius: 4px;
+        }
+        QComboBox::down-arrow {
+            width: 8px; height: 8px;
+            background-color: #CDD6F4;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #313244; color: #CDD6F4;
+            selection-background-color: #45475A;
+        }
+        QRadioButton { color: #CDD6F4; spacing: 6px; }
+        QRadioButton::indicator {
+            width: 14px; height: 14px; border-radius: 7px;
+            border: 2px solid #45475A; background: #313244;
+        }
+        QRadioButton::indicator:checked { background: #89B4FA; border-color: #89B4FA; }
+        QPushButton {
+            background-color: #89B4FA; color: #1E1E2E; border: none;
+            border-radius: 4px; padding: 6px 18px; font-weight: bold;
+        }
+        QPushButton:hover    { background-color: #B4BEFE; }
+        QPushButton:pressed  { background-color: #74C7EC; }
+        QPushButton:disabled { background-color: #45475A; color: #6C7086; }
+        QPushButton#clearBtn   { background-color: #45475A; color: #CDD6F4; }
+        QPushButton#exportBtn  { background-color: #A6E3A1; color: #1E1E2E; }
+        QPushButton#acceptBtn  { background-color: #A6E3A1; color: #1E1E2E; }
+        QPushButton#rejectBtn  { background-color: #F38BA8; color: #1E1E2E; }
+        QPushButton#cancelBtn  { background-color: #FAB387; color: #1E1E2E; }
+        QPushButton#sendBtn    { background-color: #CBA6F7; color: #1E1E2E; }
+        QPushButton#browseBtn  { background-color: #45475A; color: #CDD6F4; }
+        QPushButton#copyBtn    { background-color: #45475A; color: #CDD6F4;
+                                 padding: 4px 10px; font-size: 11px; }
+        QTableWidget {
+            background-color: #11111B; border: 1px solid #313244;
+            border-radius: 4px; gridline-color: #313244;
+        }
+        QTableWidget::item          { padding: 4px; }
+        QTableWidget::item:selected { background-color: #45475A; }
+        QHeaderView::section {
+            background-color: #313244; color: #89B4FA;
+            border: none; padding: 4px 8px; font-weight: bold;
+        }
+        QTextEdit {
+            background-color: #11111B; border: 1px solid #313244;
+            border-radius: 4px;
+            font-family: "Cascadia Code", "Consolas", monospace; font-size: 12px;
+        }
+        QLabel#statusLabel[connected="true"]    { color: #A6E3A1; font-weight: bold; }
+        QLabel#statusLabel[connected="false"]   { color: #F38BA8; font-weight: bold; }
+        QLabel#statusLabel[connected="pending"] { color: #FAB387; font-weight: bold; }
+        QLabel#peerIdLabel    { color: #CBA6F7; font-size: 11px; }
+        QLabel#genRoomLabel   { color: #A6E3A1; font-weight: bold; font-size: 13px; }
+        QLabel#fileLabel      { color: #A6E3A1; font-size: 11px; }
+        QLabel#fileLabelEmpty { color: #6C7086; font-size: 11px; font-style: italic; }
+        QLabel#hintLabel      { color: #6C7086; font-size: 10px; font-style: italic; }
+        QProgressBar {
+            border: 1px solid #45475A; border-radius: 4px;
+            background: #313244; height: 6px;
+        }
+        QProgressBar::chunk { background-color: #89B4FA; border-radius: 4px; }
+        QScrollBar:vertical { background: #1E1E2E; width: 8px; }
+        QScrollBar::handle:vertical {
+            background: #45475A; border-radius: 4px; min-height: 20px;
+        }
+    )"));
 
-void FileTransfer::setupUI()
-{
-    QWidget* centralWidget = new QWidget(this);
-    QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
-    mainLayout->setContentsMargins(10, 10, 10, 10);
-    mainLayout->setSpacing(10);
+    auto* central = new QWidget(this);
+    auto* rootVBox = new QVBoxLayout(central);
+    rootVBox->setContentsMargins(10, 10, 10, 10);
+    rootVBox->setSpacing(8);
+    setCentralWidget(central);
 
-    // Settings Section
-    QGroupBox* settingsGroupBox = new QGroupBox(QStringLiteral("Server Configuration"));
-    QHBoxLayout* settingsLayout = new QHBoxLayout(settingsGroupBox);
-    settingsLayout->setSpacing(5);
+    auto* mainSplit = new QSplitter(Qt::Horizontal, central);
+    mainSplit->setHandleWidth(6);
 
-    // Server URL
-    settingsLayout->addWidget(new QLabel(QStringLiteral("Server URL:")));
-    m_serverUrlEdit = new QLineEdit();
-    m_serverUrlEdit->setPlaceholderText(QStringLiteral("http://localhost:3000"));
-    m_serverUrlEdit->setMaximumWidth(200);
-    settingsLayout->addWidget(m_serverUrlEdit);
+    auto* leftWidget = new QWidget(mainSplit);
+    auto* leftVBox = new QVBoxLayout(leftWidget);
+    leftVBox->setContentsMargins(0, 0, 0, 0);
+    leftVBox->setSpacing(8);
 
-    // Room ID
-    settingsLayout->addWidget(new QLabel(QStringLiteral("Room ID:")));
-    m_roomIdEdit = new QLineEdit();
-    m_roomIdEdit->setPlaceholderText(QStringLiteral("default-room"));
-    m_roomIdEdit->setMaximumWidth(150);
-    settingsLayout->addWidget(m_roomIdEdit);
+    // ── Connection group ──────────────────────────────────────────────────
+    auto* connGroup = new QGroupBox(QStringLiteral("Connection"), leftWidget);
+    auto* connForm = new QFormLayout(connGroup);
+    connForm->setSpacing(8);
 
-    // Password
-    settingsLayout->addWidget(new QLabel(QStringLiteral("Password:")));
-    m_passwordEdit = new QLineEdit();
+    m_serverEdit = new QLineEdit(
+        QStringLiteral("http://localhost:3000"), connGroup);
+    connForm->addRow(QStringLiteral("Server URL"), m_serverEdit);
+
+    auto* modeBox = new QHBoxLayout();
+    m_joinRadio = new QRadioButton(QStringLiteral("Join Room"), connGroup);
+    m_createRadio = new QRadioButton(QStringLiteral("Create Room"), connGroup);
+    m_joinRadio->setChecked(true);
+    modeBox->addWidget(m_joinRadio);
+    modeBox->addSpacing(16);
+    modeBox->addWidget(m_createRadio);
+    modeBox->addStretch();
+    auto* modeWidget = new QWidget(connGroup);
+    modeWidget->setLayout(modeBox);
+    connForm->addRow(QStringLiteral("Mode"), modeWidget);
+
+    connect(m_joinRadio, &QRadioButton::toggled,
+        this, &FileTransfer::onModeChanged);
+    connect(m_createRadio, &QRadioButton::toggled,
+        this, &FileTransfer::onModeChanged);
+
+    m_joinWidget = new QWidget(connGroup);
+    auto* joinForm = new QFormLayout(m_joinWidget);
+    joinForm->setContentsMargins(0, 0, 0, 0);
+    joinForm->setSpacing(8);
+    m_roomIdEdit = new QLineEdit(m_joinWidget);
+    m_roomIdEdit->setPlaceholderText(QStringLiteral("e.g. J9bD9R"));
+    joinForm->addRow(QStringLiteral("Room ID"), m_roomIdEdit);
+
+    m_createWidget = new QWidget(connGroup);
+    auto* createForm = new QFormLayout(m_createWidget);
+    createForm->setContentsMargins(0, 0, 0, 0);
+    createForm->setSpacing(8);
+
+    auto* genRow = new QHBoxLayout();
+    m_genRoomLabel = new QLabel(QStringLiteral("\u2014"), m_createWidget);
+    m_genRoomLabel->setObjectName(QStringLiteral("genRoomLabel"));
+    m_genRoomLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto* copyBtn = new QPushButton(QStringLiteral("\u29C9 Copy"), m_createWidget);
+    copyBtn->setObjectName(QStringLiteral("copyBtn"));
+    copyBtn->setFixedWidth(60);
+    connect(copyBtn, &QPushButton::clicked, this, [this]() {
+        const QString id = m_genRoomLabel->text();
+        if (!id.isEmpty() && id != QStringLiteral("\u2014"))
+            QApplication::clipboard()->setText(id);
+        });
+    genRow->addWidget(m_genRoomLabel, 1);
+    genRow->addWidget(copyBtn);
+    auto* genRowWidget = new QWidget(m_createWidget);
+    genRowWidget->setLayout(genRow);
+
+    auto* hintLabel = new QLabel(
+        QStringLiteral("Room ID is generated by the server after clicking Connect."),
+        m_createWidget);
+    hintLabel->setObjectName(QStringLiteral("hintLabel"));
+    hintLabel->setWordWrap(true);
+    createForm->addRow(QStringLiteral("Room ID"), genRowWidget);
+    createForm->addRow(QString(), hintLabel);
+    m_createWidget->setVisible(false);
+
+    connForm->addRow(m_joinWidget);
+    connForm->addRow(m_createWidget);
+
+    m_passwordEdit = new QLineEdit(connGroup);
     m_passwordEdit->setEchoMode(QLineEdit::Password);
-    m_passwordEdit->setPlaceholderText(QStringLiteral("password"));
-    m_passwordEdit->setMaximumWidth(150);
-    settingsLayout->addWidget(m_passwordEdit);
+    m_passwordEdit->setPlaceholderText(QStringLiteral("Room password"));
+    connForm->addRow(QStringLiteral("Password"), m_passwordEdit);
 
-    // Connect/Disconnect buttons
-    m_connectBtn = new QPushButton(QStringLiteral("Connect"));
-    m_connectBtn->setMaximumWidth(100);
-    m_connectBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #4CAF50; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #45a049; }"));
-    settingsLayout->addWidget(m_connectBtn);
+    m_connectBtn = new QPushButton(QStringLiteral("Connect"), connGroup);
+    connect(m_connectBtn, &QPushButton::clicked,
+        this, &FileTransfer::onConnectClicked);
+    connForm->addRow(QString(), m_connectBtn);
 
-    m_disconnectBtn = new QPushButton(QStringLiteral("Disconnect"));
-    m_disconnectBtn->setMaximumWidth(100);
-    m_disconnectBtn->setEnabled(false);
-    m_disconnectBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #f44336; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #da190b; }"
-        "QPushButton:disabled { background-color: #cccccc; }"));
-    settingsLayout->addWidget(m_disconnectBtn);
+    // ── Status group ──────────────────────────────────────────────────────
+    auto* statusGroup = new QGroupBox(QStringLiteral("Status"), leftWidget);
+    auto* statusForm = new QFormLayout(statusGroup);
+    statusForm->setSpacing(8);
 
-    settingsLayout->addStretch();
-    mainLayout->addWidget(settingsGroupBox);
+    m_statusLabel = new QLabel(QStringLiteral("Disconnected"), statusGroup);
+    m_statusLabel->setObjectName(QStringLiteral("statusLabel"));
+    m_statusLabel->setProperty("connected", QStringLiteral("false"));
 
-    m_tabWidget = new QTabWidget(this);
+    m_roomLabel = new QLabel(QStringLiteral("\u2014"), statusGroup);
 
-    // ═════ TAB 0: Settings ════════════════════════════════════════════════
-    QWidget* settingsTab = new QWidget();
-    QVBoxLayout* settingsTabLayout = new QVBoxLayout(settingsTab);
+    auto* roomIdRow = new QHBoxLayout();
+    m_roomIdCopyLabel = new QLabel(QStringLiteral("\u2014"), statusGroup);
+    m_roomIdCopyLabel->setObjectName(QStringLiteral("genRoomLabel"));
+    m_roomIdCopyLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto* copyRoomBtn = new QPushButton(QStringLiteral("\u29C9"), statusGroup);
+    copyRoomBtn->setObjectName(QStringLiteral("copyBtn"));
+    copyRoomBtn->setFixedWidth(28);
+    copyRoomBtn->setToolTip(QStringLiteral("Copy room ID"));
+    connect(copyRoomBtn, &QPushButton::clicked, this, [this]() {
+        const QString id = m_roomIdCopyLabel->text();
+        if (!id.isEmpty() && id != QStringLiteral("\u2014"))
+            QApplication::clipboard()->setText(id);
+        });
+    roomIdRow->addWidget(m_roomIdCopyLabel, 1);
+    roomIdRow->addWidget(copyRoomBtn);
+    auto* roomIdRowWidget = new QWidget(statusGroup);
+    roomIdRowWidget->setLayout(roomIdRow);
 
-    QLabel* settingsInfoLabel = new QLabel(QStringLiteral(
-        "<b>Connection Settings:</b><br>"
-        "1. Enter your server URL (e.g., http://localhost:3000)<br>"
-        "2. Enter room ID to join<br>"
-        "3. Enter password for authentication<br>"
-        "4. Click 'Connect' to establish connection<br>"
-        "<br><b>Features:</b><br>"
-        "- Real-time file transfer with WebRTC<br>"
-        "- Automatic ICE candidate exchange<br>"
-        "- Peer discovery and management<br>"
-        "- Transfer progress monitoring"));
-    settingsInfoLabel->setWordWrap(true);
-    settingsTabLayout->addWidget(settingsInfoLabel);
-    settingsTabLayout->addStretch();
+    m_peerIdLabel = new QLabel(QStringLiteral("\u2014"), statusGroup);
+    m_peerIdLabel->setObjectName(QStringLiteral("peerIdLabel"));
+    m_peerIdLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_peerIdLabel->setWordWrap(true);
 
-    m_tabWidget->addTab(settingsTab, QStringLiteral("📋 Info"));
+    m_peersLabel = new QLabel(QStringLiteral("\u2014"), statusGroup);
 
-    // ═════ TAB 1: Send Files ══════════════════════════════════════════════
-    QWidget* sendTab = new QWidget();
-    QVBoxLayout* sendLayout = new QVBoxLayout(sendTab);
+    m_progressBar = new QProgressBar(statusGroup);
+    m_progressBar->setRange(0, 0);
+    m_progressBar->setVisible(false);
+    m_progressBar->setFixedHeight(6);
 
-    // Peer Selection
-    QGroupBox* peerGroupBox = new QGroupBox(QStringLiteral("Select Recipient"));
-    QHBoxLayout* peerLayout = new QHBoxLayout(peerGroupBox);
-    peerLayout->addWidget(new QLabel(QStringLiteral("Send to:")));
-    m_peerComboBox = new QComboBox();
-    m_peerComboBox->addItem(QStringLiteral("-- Select a peer --"), "");
-    m_refreshPeersBtn = new QPushButton(QStringLiteral("🔄 Refresh"));
-    m_refreshPeersBtn->setMaximumWidth(100);
-    m_refreshPeersBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #2196F3; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #0b7dda; }"));
-    peerLayout->addWidget(m_peerComboBox, 1);
-    peerLayout->addWidget(m_refreshPeersBtn);
-    sendLayout->addWidget(peerGroupBox);
+    statusForm->addRow(QStringLiteral("State"), m_statusLabel);
+    statusForm->addRow(QStringLiteral("Room"), m_roomLabel);
+    statusForm->addRow(QStringLiteral("Room ID"), roomIdRowWidget);
+    statusForm->addRow(QStringLiteral("My Peer ID"), m_peerIdLabel);
+    statusForm->addRow(QStringLiteral("Peers"), m_peersLabel);
+    statusForm->addRow(QString(), m_progressBar);
 
-    // File Selection
-    QGroupBox* fileGroupBox = new QGroupBox(QStringLiteral("Select File"));
-    QHBoxLayout* fileLayout = new QHBoxLayout(fileGroupBox);
-    m_sendFilePathEdit = new QLineEdit();
-    m_sendFilePathEdit->setReadOnly(true);
-    m_sendFilePathEdit->setPlaceholderText(QStringLiteral("No file selected"));
-    m_browseSendFileBtn = new QPushButton(QStringLiteral("Browse..."));
-    m_browseSendFileBtn->setMaximumWidth(100);
-    fileLayout->addWidget(new QLabel(QStringLiteral("File:")));
-    fileLayout->addWidget(m_sendFilePathEdit, 1);
-    fileLayout->addWidget(m_browseSendFileBtn);
-    sendLayout->addWidget(fileGroupBox);
+    // ── Send File group ───────────────────────────────────────────────────
+    auto* sendGroup = new QGroupBox(QStringLiteral("Send File"), leftWidget);
+    auto* sendVBox = new QVBoxLayout(sendGroup);
+    sendVBox->setSpacing(8);
 
-    // Send Status
-    m_sendStatusLabel = new QLabel(QStringLiteral("Ready to send files"));
-    m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #888; font-size: 12px;"));
-    sendLayout->addWidget(m_sendStatusLabel);
+    auto* peerRow = new QHBoxLayout();
+    auto* peerLbl = new QLabel(QStringLiteral("Target Peer:"), sendGroup);
+    peerLbl->setFixedWidth(82);
+    m_peerCombo = new QComboBox(sendGroup);
+    m_peerCombo->setEditable(true);
+    m_peerCombo->setPlaceholderText(QStringLiteral("Peer ID or select\u2026"));
+    m_peerCombo->setMinimumWidth(160);
+    m_peerCombo->setEnabled(false);
+    peerRow->addWidget(peerLbl);
+    peerRow->addWidget(m_peerCombo, 1);
 
-    // Outgoing Transfers Table
-    m_outgoingTransfersTable = new QTableWidget();
-    m_outgoingTransfersTable->setColumnCount(6);
-    m_outgoingTransfersTable->setHorizontalHeaderLabels(
-        QStringList() << QStringLiteral("File Name")
-        << QStringLiteral("Size")
-        << QStringLiteral("To Peer")
-        << QStringLiteral("Progress")
-        << QStringLiteral("Status")
-        << QStringLiteral("Speed"));
-    m_outgoingTransfersTable->horizontalHeader()->setStretchLastSection(true);
-    m_outgoingTransfersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_outgoingTransfersTable->setStyleSheet(
-        QStringLiteral("QTableWidget { gridline-color: #ddd; }"
-            "QHeaderView::section { background-color: #f0f0f0; padding: 5px; }"
-            "QTableWidget::item { padding: 5px; }"));
-    sendLayout->addWidget(m_outgoingTransfersTable, 1);
+    auto* fileRow = new QHBoxLayout();
+    m_selectedFileLabel = new QLabel(
+        QStringLiteral("No file chosen"), sendGroup);
+    m_selectedFileLabel->setObjectName(QStringLiteral("fileLabelEmpty"));
+    m_selectedFileLabel->setWordWrap(true);
+    m_selectedFileLabel->setMinimumHeight(32);
 
-    // Send Button
-    QHBoxLayout* sendBtnLayout = new QHBoxLayout();
-    m_sendFileBtn = new QPushButton(QStringLiteral("Send File"));
-    m_sendFileBtn->setMinimumWidth(100);
-    m_sendFileBtn->setEnabled(false);
-    m_sendFileBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #4CAF50; color: white; border-radius: 5px; "
-        "padding: 8px; font-weight: bold; font-size: 12px; }"
-        "QPushButton:hover { background-color: #45a049; }"
-        "QPushButton:disabled { background-color: #cccccc; }"));
-    sendBtnLayout->addStretch();
-    sendBtnLayout->addWidget(m_sendFileBtn);
-    sendLayout->addLayout(sendBtnLayout);
+    m_browseBtn = new QPushButton(QStringLiteral("Browse\u2026"), sendGroup);
+    m_browseBtn->setObjectName(QStringLiteral("browseBtn"));
+    m_browseBtn->setFixedWidth(76);
+    m_browseBtn->setEnabled(false);
+    connect(m_browseBtn, &QPushButton::clicked, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("Select File to Send"),
+            QDir::homePath(), QStringLiteral("All Files (*)"));
+        if (path.isEmpty()) return;
+        m_pendingSendPath = path;
+        m_selectedFileLabel->setText(QFileInfo(path).fileName());
+        m_selectedFileLabel->setObjectName(QStringLiteral("fileLabel"));
+        m_selectedFileLabel->style()->unpolish(m_selectedFileLabel);
+        m_selectedFileLabel->style()->polish(m_selectedFileLabel);
+        m_sendBtn->setEnabled(true);
+        qInfo() << "[UI] File selected for sending:" << path;
+        });
 
-    m_tabWidget->addTab(sendTab, QStringLiteral("📤 Send Files"));
+    fileRow->addWidget(m_selectedFileLabel, 1);
+    fileRow->addWidget(m_browseBtn);
 
-    // ═════ TAB 2: Incoming File Offers ═════════════════════════════════════
-    QWidget* incomingTab = new QWidget();
-    QVBoxLayout* incomingLayout = new QVBoxLayout(incomingTab);
+    m_sendBtn = new QPushButton(
+        QStringLiteral("\u2191  Send File"), sendGroup);
+    m_sendBtn->setObjectName(QStringLiteral("sendBtn"));
+    m_sendBtn->setEnabled(false);
+    m_sendBtn->setMinimumHeight(34);
+    connect(m_sendBtn, &QPushButton::clicked,
+        this, &FileTransfer::onSendFileClicked);
 
-    m_incomingStatusLabel = new QLabel(QStringLiteral("Waiting for file offers..."));
-    m_incomingStatusLabel->setStyleSheet(QStringLiteral("color: #888; font-size: 12px;"));
-    incomingLayout->addWidget(m_incomingStatusLabel);
+    sendVBox->addLayout(peerRow);
+    sendVBox->addLayout(fileRow);
+    sendVBox->addWidget(m_sendBtn);
 
-    m_incomingTable = new QTableWidget();
-    m_incomingTable->setColumnCount(5);
-    m_incomingTable->setHorizontalHeaderLabels(
-        QStringList() << QStringLiteral("File Name")
-        << QStringLiteral("Size")
-        << QStringLiteral("From")
-        << QStringLiteral("Type")
-        << QStringLiteral("Status"));
-    m_incomingTable->horizontalHeader()->setStretchLastSection(true);
-    m_incomingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_incomingTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_incomingTable->setStyleSheet(
-        QStringLiteral("QTableWidget { gridline-color: #ddd; }"
-            "QHeaderView::section { background-color: #f0f0f0; padding: 5px; }"
-            "QTableWidget::item { padding: 5px; }"));
-    incomingLayout->addWidget(m_incomingTable, 1);
+    leftVBox->addWidget(connGroup);
+    leftVBox->addWidget(statusGroup);
+    leftVBox->addWidget(sendGroup);
+    leftVBox->addStretch();
 
-    QGroupBox* saveGroupBox = new QGroupBox(QStringLiteral("Save Location"));
-    QHBoxLayout* saveLayout = new QHBoxLayout(saveGroupBox);
-    m_savePathEdit = new QLineEdit();
-    m_savePathEdit->setReadOnly(true);
-    m_browseSavePathBtn = new QPushButton(QStringLiteral("Browse..."));
-    saveLayout->addWidget(new QLabel(QStringLiteral("Save To:")));
-    saveLayout->addWidget(m_savePathEdit, 1);
-    saveLayout->addWidget(m_browseSavePathBtn);
-    incomingLayout->addWidget(saveGroupBox);
+    // ── RIGHT panel ───────────────────────────────────────────────────────
+    auto* rightSplit = new QSplitter(Qt::Vertical, mainSplit);
+    rightSplit->setHandleWidth(6);
 
-    QHBoxLayout* buttonLayout = new QHBoxLayout();
-    m_acceptBtn = new QPushButton(QStringLiteral("Accept"));
-    m_rejectBtn = new QPushButton(QStringLiteral("Reject"));
+    auto* ftGroup = new QGroupBox(
+        QStringLiteral("File Transfers"), rightSplit);
+    auto* ftVBox = new QVBoxLayout(ftGroup);
+
+    m_transferTable = new QTableWidget(0, TC_COUNT, ftGroup);
+    m_transferTable->setHorizontalHeaderLabels({
+        QStringLiteral("Dir"),
+        QStringLiteral("Transfer ID"),
+        QStringLiteral("File Name"),
+        QStringLiteral("Size"),
+        QStringLiteral("Peer"),
+        QStringLiteral("Status"),
+        QStringLiteral("Progress")
+        });
+    m_transferTable->horizontalHeader()
+        ->setSectionResizeMode(TC_NAME, QHeaderView::Stretch);
+    m_transferTable->horizontalHeader()
+        ->setSectionResizeMode(TC_DIR, QHeaderView::Fixed);
+    m_transferTable->horizontalHeader()
+        ->setSectionResizeMode(TC_ID, QHeaderView::ResizeToContents);
+    m_transferTable->horizontalHeader()
+        ->setSectionResizeMode(TC_PROGRESS, QHeaderView::Fixed);
+    m_transferTable->setColumnWidth(TC_DIR, 36);
+    m_transferTable->setColumnWidth(TC_PROGRESS, 150);
+    m_transferTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_transferTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_transferTable->verticalHeader()->setVisible(false);
+
+    auto* ftBtnRow = new QHBoxLayout();
+    m_acceptBtn = new QPushButton(QStringLiteral("Accept"), ftGroup);
+    m_rejectBtn = new QPushButton(QStringLiteral("Reject"), ftGroup);
+    m_cancelBtn = new QPushButton(QStringLiteral("Cancel"), ftGroup);
+    m_acceptBtn->setObjectName(QStringLiteral("acceptBtn"));
+    m_rejectBtn->setObjectName(QStringLiteral("rejectBtn"));
+    m_cancelBtn->setObjectName(QStringLiteral("cancelBtn"));
     m_acceptBtn->setEnabled(false);
     m_rejectBtn->setEnabled(false);
-    m_acceptBtn->setMinimumWidth(100);
-    m_rejectBtn->setMinimumWidth(100);
-    m_acceptBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #4CAF50; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #45a049; }"
-        "QPushButton:disabled { background-color: #cccccc; }"));
-    m_rejectBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #f44336; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #da190b; }"
-        "QPushButton:disabled { background-color: #cccccc; }"));
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(m_acceptBtn);
-    buttonLayout->addWidget(m_rejectBtn);
-    incomingLayout->addLayout(buttonLayout);
-
-    m_tabWidget->addTab(incomingTab, QStringLiteral("📥 Incoming Offers"));
-
-    // ═════ TAB 3: Active Transfers ═════════════════════════════════════════
-    QWidget* activeTab = new QWidget();
-    QVBoxLayout* activeLayout = new QVBoxLayout(activeTab);
-
-    m_activeStatusLabel = new QLabel(QStringLiteral("No active transfers"));
-    m_activeStatusLabel->setStyleSheet(QStringLiteral("color: #888; font-size: 12px;"));
-    activeLayout->addWidget(m_activeStatusLabel);
-
-    m_activeTransfersTable = new QTableWidget();
-    m_activeTransfersTable->setColumnCount(6);
-    m_activeTransfersTable->setHorizontalHeaderLabels(
-        QStringList() << QStringLiteral("ID")
-        << QStringLiteral("File")
-        << QStringLiteral("Progress")
-        << QStringLiteral("Speed")
-        << QStringLiteral("Status")
-        << QStringLiteral("Time Left"));
-    m_activeTransfersTable->horizontalHeader()->setStretchLastSection(true);
-    m_activeTransfersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_activeTransfersTable->setStyleSheet(
-        QStringLiteral("QTableWidget { gridline-color: #ddd; }"
-            "QHeaderView::section { background-color: #f0f0f0; padding: 5px; }"
-            "QTableWidget::item { padding: 5px; }"));
-    activeLayout->addWidget(m_activeTransfersTable, 1);
-
-    QHBoxLayout* activeBtnLayout = new QHBoxLayout();
-    m_cancelTransferBtn = new QPushButton(QStringLiteral("Cancel Transfer"));
-    m_cancelTransferBtn->setEnabled(false);
-    m_cancelTransferBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #ff9800; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #e68900; }"
-        "QPushButton:disabled { background-color: #cccccc; }"));
-    activeBtnLayout->addStretch();
-    activeBtnLayout->addWidget(m_cancelTransferBtn);
-    activeLayout->addLayout(activeBtnLayout);
-
-    m_tabWidget->addTab(activeTab, QStringLiteral("⬆️ Active Transfers"));
-
-    // ═════ TAB 4: Completed Transfers ══════════════════════════════════════
-    QWidget* completedTab = new QWidget();
-    QVBoxLayout* completedLayout = new QVBoxLayout(completedTab);
-
-    m_completedTable = new QTableWidget();
-    m_completedTable->setColumnCount(5);
-    m_completedTable->setHorizontalHeaderLabels(
-        QStringList() << QStringLiteral("File Name")
-        << QStringLiteral("Size")
-        << QStringLiteral("Completed")
-        << QStringLiteral("Location")
-        << QStringLiteral("Status"));
-    m_completedTable->horizontalHeader()->setStretchLastSection(true);
-    m_completedTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_completedTable->setStyleSheet(
-        QStringLiteral("QTableWidget { gridline-color: #ddd; }"
-            "QHeaderView::section { background-color: #f0f0f0; padding: 5px; }"
-            "QTableWidget::item { padding: 5px; }"));
-    completedLayout->addWidget(m_completedTable, 1);
-
-    QHBoxLayout* completedBtnLayout = new QHBoxLayout();
-    m_openFileBtn = new QPushButton(QStringLiteral("Open File"));
-    m_openFolderBtn = new QPushButton(QStringLiteral("Open Folder"));
-    m_clearCompletedBtn = new QPushButton(QStringLiteral("Clear History"));
-    m_openFileBtn->setEnabled(false);
-    m_openFolderBtn->setEnabled(false);
-    for (auto* btn : { m_openFileBtn, m_openFolderBtn, m_clearCompletedBtn }) {
-        btn->setStyleSheet(QStringLiteral(
-            "QPushButton { background-color: #2196F3; color: white; border-radius: 5px; "
-            "padding: 6px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #0b7dda; }"
-            "QPushButton:disabled { background-color: #cccccc; }"));
-    }
-    completedBtnLayout->addStretch();
-    completedBtnLayout->addWidget(m_openFileBtn);
-    completedBtnLayout->addWidget(m_openFolderBtn);
-    completedBtnLayout->addWidget(m_clearCompletedBtn);
-    completedLayout->addLayout(completedBtnLayout);
-
-    m_tabWidget->addTab(completedTab, QStringLiteral("✅ Completed"));
-
-    // ═════ TAB 5: Connected Peers ══════════════════════════════════════════
-    QWidget* peersTab = new QWidget();
-    QVBoxLayout* peersLayout = new QVBoxLayout(peersTab);
-
-    m_connectionStatusLabel = new QLabel(QStringLiteral("Not connected"));
-    m_connectionStatusLabel->setStyleSheet(
-        QStringLiteral("color: #f44336; font-weight: bold; font-size: 12px;"));
-    peersLayout->addWidget(m_connectionStatusLabel);
-
-    m_peersTable = new QTableWidget();
-    m_peersTable->setColumnCount(3);
-    m_peersTable->setHorizontalHeaderLabels(
-        QStringList() << QStringLiteral("Peer ID")
-        << QStringLiteral("Status")
-        << QStringLiteral("Joined At"));
-    m_peersTable->horizontalHeader()->setStretchLastSection(true);
-    m_peersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_peersTable->setStyleSheet(
-        QStringLiteral("QTableWidget { gridline-color: #ddd; }"
-            "QHeaderView::section { background-color: #f0f0f0; padding: 5px; }"
-            "QTableWidget::item { padding: 5px; }"));
-    peersLayout->addWidget(m_peersTable, 1);
-
-    m_tabWidget->addTab(peersTab, QStringLiteral("👥 Connected Peers"));
-
-    // ═════ TAB 6: Logs ═════════════════════════════════════════════════════
-    QWidget* logsTab = new QWidget();
-    QVBoxLayout* logsLayout = new QVBoxLayout(logsTab);
-
-    m_logsEdit = new QPlainTextEdit();
-    m_logsEdit->setReadOnly(true);
-    m_logsEdit->setFont(QFont(QStringLiteral("Courier New"), 10));
-    m_logsEdit->setStyleSheet(
-        QStringLiteral("QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
-            "border: 1px solid #ddd; }"));
-    logsLayout->addWidget(m_logsEdit, 1);
-
-    QHBoxLayout* logsButtonLayout = new QHBoxLayout();
-    m_clearLogsBtn = new QPushButton(QStringLiteral("Clear Logs"));
-    m_clearLogsBtn->setMaximumWidth(100);
-    m_clearLogsBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #2196F3; color: white; border-radius: 5px; "
-        "padding: 6px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #0b7dda; }"));
-    logsButtonLayout->addStretch();
-    logsButtonLayout->addWidget(m_clearLogsBtn);
-    logsLayout->addLayout(logsButtonLayout);
-
-    m_tabWidget->addTab(logsTab, QStringLiteral("📝 Logs"));
-
-    mainLayout->addWidget(m_tabWidget);
-    setCentralWidget(centralWidget);
-
-    connectSignals();
-}
-
-void FileTransfer::createTrayIcon()
-{
-    m_trayIcon = new QSystemTrayIcon(this);
-    m_trayIcon->setIcon(QIcon(QStringLiteral(":/icons/app.png")));
-
-    m_trayMenu = new QMenu(this);
-    m_trayMenu->addAction(QStringLiteral("Show"), this, &FileTransfer::toggleWindowVisibility);
-    m_trayMenu->addSeparator();
-    m_trayMenu->addAction(QStringLiteral("Exit"), qApp, &QApplication::quit);
-
-    m_trayIcon->setContextMenu(m_trayMenu);
-    connect(m_trayIcon, &QSystemTrayIcon::activated,
-        this, &FileTransfer::onTrayIconActivated);
-
-    m_trayIcon->show();
-}
-
-void FileTransfer::connectSignals()
-{
-    connect(m_connectBtn, &QPushButton::clicked, this, &FileTransfer::onConnectClicked);
-    connect(m_disconnectBtn, &QPushButton::clicked, this, &FileTransfer::onDisconnectClicked);
-    // Send File Signals
-    connect(m_browseSendFileBtn, &QPushButton::clicked,
-        this, &FileTransfer::onBrowseSendFile);
-    connect(m_sendFileBtn, &QPushButton::clicked,
-        this, &FileTransfer::onSendFileClicked);
-    connect(m_peerComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
-        this, &FileTransfer::onPeerSelectionChanged);
-    connect(m_refreshPeersBtn, &QPushButton::clicked,
-        this, &FileTransfer::onRefreshPeersList);
-    connect(m_browseSavePathBtn, &QPushButton::clicked,
-        this, &FileTransfer::onBrowseSaveLocation);
+    m_cancelBtn->setEnabled(false);
     connect(m_acceptBtn, &QPushButton::clicked,
-        this, &FileTransfer::onAcceptTransferClicked);
+        this, &FileTransfer::onAcceptClicked);
     connect(m_rejectBtn, &QPushButton::clicked,
-        this, &FileTransfer::onRejectTransferClicked);
-    connect(m_cancelTransferBtn, &QPushButton::clicked,
-        this, &FileTransfer::onCancelTransfer);
-    connect(m_openFileBtn, &QPushButton::clicked,
-        this, &FileTransfer::onOpenTransferredFile);
-    connect(m_openFolderBtn, &QPushButton::clicked,
-        this, &FileTransfer::onOpenTransferFolder);
-    connect(m_clearCompletedBtn, &QPushButton::clicked,
-        this, &FileTransfer::onClearCompletedTransfers);
-    connect(m_clearLogsBtn, &QPushButton::clicked, this, [this]() {
-        m_logsEdit->clear();
-        qInfo() << "[UI] Logs cleared";
+        this, &FileTransfer::onRejectClicked);
+    connect(m_cancelBtn, &QPushButton::clicked,
+        this, &FileTransfer::onCancelClicked);
+    ftBtnRow->addStretch();
+    ftBtnRow->addWidget(m_acceptBtn);
+    ftBtnRow->addWidget(m_rejectBtn);
+    ftBtnRow->addWidget(m_cancelBtn);
+
+    ftVBox->addWidget(m_transferTable);
+    ftVBox->addLayout(ftBtnRow);
+
+    connect(m_transferTable, &QTableWidget::itemSelectionChanged,
+        this, [this]() {
+            const int row = m_transferTable->currentRow();
+            if (row < 0) {
+                m_acceptBtn->setEnabled(false);
+                m_rejectBtn->setEnabled(false);
+                m_cancelBtn->setEnabled(false);
+                return;
+            }
+            const QString status =
+                m_transferTable->item(row, TC_STATUS)
+                ? m_transferTable->item(row, TC_STATUS)->text() : QString();
+            const QString dir =
+                m_transferTable->item(row, TC_DIR)
+                ? m_transferTable->item(row, TC_DIR)
+                ->data(Qt::UserRole).toString()
+                : QStringLiteral("in");
+            m_acceptBtn->setEnabled(
+                status == QStringLiteral("pending") && dir == QStringLiteral("in"));
+            m_rejectBtn->setEnabled(
+                status == QStringLiteral("pending") && dir == QStringLiteral("in"));
+            m_cancelBtn->setEnabled(
+                status == QStringLiteral("active")
+                || status == QStringLiteral("negotiating")
+                || status == QStringLiteral("webrtc-connecting")
+                || status == QStringLiteral("sending"));
         });
 
-    connect(m_incomingTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-        auto selected = m_incomingTable->selectedItems();
-        if (!selected.isEmpty()) {
-            int row = selected.first()->row();
-            m_selectedTransferId = m_incomingTable->item(row, 0)->data(Qt::UserRole).toString();
-            m_acceptBtn->setEnabled(true);
-            m_rejectBtn->setEnabled(true);
-        }
-        else {
-            m_acceptBtn->setEnabled(false);
-            m_rejectBtn->setEnabled(false);
-        }
-        });
+    auto* logGroup = new QGroupBox(
+        QStringLiteral("Activity Log"), rightSplit);
+    auto* logVBox = new QVBoxLayout(logGroup);
 
-    connect(m_activeTransfersTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-        auto selected = m_activeTransfersTable->selectedItems();
-        m_cancelTransferBtn->setEnabled(!selected.isEmpty());
-        if (!selected.isEmpty()) {
-            int row = selected.first()->row();
-            m_selectedTransferId = m_activeTransfersTable->item(row, 0)->data(Qt::UserRole).toString();
-        }
-        });
+    m_logView = new QTextEdit(logGroup);
+    m_logView->setReadOnly(true);
+    m_logView->setLineWrapMode(QTextEdit::NoWrap);
 
-    connect(m_completedTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-        auto selected = m_completedTable->selectedItems();
-        bool hasSelection = !selected.isEmpty();
-        m_openFileBtn->setEnabled(hasSelection);
-        m_openFolderBtn->setEnabled(hasSelection);
-        if (hasSelection) {
-            int row = selected.first()->row();
-            m_selectedTransferId = m_completedTable->item(row, 0)->data(Qt::UserRole).toString();
-        }
-        });
+    auto* logBtnRow = new QHBoxLayout();
+    m_clearBtn = new QPushButton(QStringLiteral("Clear"), logGroup);
+    m_exportBtn = new QPushButton(QStringLiteral("Export"), logGroup);
+    m_clearBtn->setObjectName(QStringLiteral("clearBtn"));
+    m_exportBtn->setObjectName(QStringLiteral("exportBtn"));
+    m_clearBtn->setFixedWidth(80);
+    m_exportBtn->setFixedWidth(80);
+    connect(m_clearBtn, &QPushButton::clicked,
+        this, &FileTransfer::onClearLogsClicked);
+    connect(m_exportBtn, &QPushButton::clicked,
+        this, &FileTransfer::onExportLogsClicked);
+    logBtnRow->addStretch();
+    logBtnRow->addWidget(m_clearBtn);
+    logBtnRow->addWidget(m_exportBtn);
+
+    logVBox->addWidget(m_logView);
+    logVBox->addLayout(logBtnRow);
+
+    rightSplit->addWidget(ftGroup);
+    rightSplit->addWidget(logGroup);
+    rightSplit->setSizes({ 300, 400 });
+
+    mainSplit->addWidget(leftWidget);
+    mainSplit->addWidget(rightSplit);
+    mainSplit->setStretchFactor(0, 0);
+    mainSplit->setStretchFactor(1, 1);
+    mainSplit->setSizes({ 360, 840 });
+
+    rootVBox->addWidget(mainSplit);
 }
+
+// ---------------------------------------------------------------------------
+// Mode radio
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onModeChanged()
+{
+    const bool isCreate = m_createRadio->isChecked();
+    m_joinWidget->setVisible(!isCreate);
+    m_createWidget->setVisible(isCreate);
+    if (isCreate) {
+        m_genRoomLabel->setText(QStringLiteral("\u2014"));
+        m_connectBtn->setText(QStringLiteral("Create \u0026 Connect"));
+    }
+    else {
+        m_connectBtn->setText(QStringLiteral("Connect"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UI state helpers
+// ---------------------------------------------------------------------------
+
+void FileTransfer::setConnectionState(bool connecting, bool connected)
+{
+    m_connectBtn->setEnabled(!connecting && !connected);
+    m_joinRadio->setEnabled(!connecting && !connected);
+    m_createRadio->setEnabled(!connecting && !connected);
+    m_progressBar->setVisible(connecting);
+
+    const bool canSend = connected && m_ftm != nullptr;
+    m_peerCombo->setEnabled(canSend);
+    m_browseBtn->setEnabled(canSend);
+
+    if (connecting) {
+        m_statusLabel->setText(QStringLiteral("Connecting\u2026"));
+        m_statusLabel->setProperty("connected", QStringLiteral("pending"));
+    }
+    else if (connected) {
+        m_statusLabel->setText(QStringLiteral("Connected \u2713"));
+        m_statusLabel->setProperty("connected", QStringLiteral("true"));
+    }
+    else {
+        m_statusLabel->setText(QStringLiteral("Disconnected"));
+        m_statusLabel->setProperty("connected", QStringLiteral("false"));
+        m_roomLabel->setText(QStringLiteral("\u2014"));
+        m_roomIdCopyLabel->setText(QStringLiteral("\u2014"));
+        m_peerIdLabel->setText(QStringLiteral("\u2014"));
+        m_peersLabel->setText(QStringLiteral("\u2014"));
+        m_peerCombo->clear();
+        m_peerCombo->setEnabled(false);
+        m_browseBtn->setEnabled(false);
+        m_sendBtn->setEnabled(false);
+        m_pendingSendPath.clear();
+        m_selectedFileLabel->setText(QStringLiteral("No file chosen"));
+        m_selectedFileLabel->setObjectName(QStringLiteral("fileLabelEmpty"));
+        m_selectedFileLabel->style()->unpolish(m_selectedFileLabel);
+        m_selectedFileLabel->style()->polish(m_selectedFileLabel);
+    }
+    QStyle* s = QApplication::style();
+    s->unpolish(m_statusLabel);
+    s->polish(m_statusLabel);
+    m_statusLabel->update();
+}
+
+void FileTransfer::populatePeerCombo(const QJsonArray& peers)
+{
+    m_peerCombo->clear();
+    for (const QJsonValue& v : peers) {
+        const QString id =
+            v.isObject()
+            ? v.toObject().value(QStringLiteral("userId")).toString()
+            : v.toString();
+        if (!id.isEmpty())
+            m_peerCombo->addItem(id, id);
+    }
+    updatePeersLabel();
+    qInfo() << "[UI] Peer combo populated with" << m_peerCombo->count()
+        << "peer(s)";
+}
+
+void FileTransfer::addPeerToCombo(const QString& peerId)
+{
+    // Guard: do not add duplicates or our own ID.
+    for (int i = 0; i < m_peerCombo->count(); ++i)
+        if (m_peerCombo->itemData(i).toString() == peerId) return;
+    if (m_client && peerId == m_client->myPeerId()) return;
+
+    m_peerCombo->addItem(peerId, peerId);
+    updatePeersLabel();
+    qInfo() << "[UI] Peer joined – added to combo:" << peerId
+        << "| total peers:" << m_peerCombo->count();
+}
+
+void FileTransfer::removePeerFromCombo(const QString& peerId)
+{
+    for (int i = 0; i < m_peerCombo->count(); ++i) {
+        if (m_peerCombo->itemData(i).toString() == peerId) {
+            m_peerCombo->removeItem(i);
+            break;
+        }
+    }
+    updatePeersLabel();
+    qInfo() << "[UI] Peer left – removed from combo:" << peerId
+        << "| total peers:" << m_peerCombo->count();
+}
+
+void FileTransfer::updatePeersLabel()
+{
+    m_peersLabel->setText(
+        QString::number(m_peerCombo->count())
+        + QStringLiteral(" peer(s) online"));
+}
+
+// ---------------------------------------------------------------------------
+// Transfer table helpers
+// ---------------------------------------------------------------------------
+
+int FileTransfer::findTransferRow(const QString& transferId) const
+{
+    for (int r = 0; r < m_transferTable->rowCount(); ++r) {
+        const QTableWidgetItem* it = m_transferTable->item(r, TC_ID);
+        if (it && it->data(Qt::UserRole).toString() == transferId)
+            return r;
+    }
+    return -1;
+}
+
+void FileTransfer::upsertTransferRow(
+    const FileTransferManager::TransferInfo& info)
+{
+    int row = findTransferRow(info.transferId);
+    if (row < 0) {
+        row = m_transferTable->rowCount();
+        m_transferTable->insertRow(row);
+    }
+
+    const QString sizeStr =
+        info.size >= 1024 * 1024
+        ? QStringLiteral("%1 MB")
+        .arg(QString::number(info.size / 1024.0 / 1024.0, 'f', 2))
+        : QStringLiteral("%1 KB")
+        .arg(QString::number(info.size / 1024.0, 'f', 1));
+
+    const bool isOut =
+        info.direction == FileTransferManager::TransferDirection::Outgoing;
+
+    auto* dirItem = new QTableWidgetItem(
+        isOut ? QStringLiteral("\u2191") : QStringLiteral("\u2193"));
+    dirItem->setTextAlignment(Qt::AlignCenter);
+    dirItem->setForeground(isOut
+        ? QColor(QStringLiteral("#CBA6F7"))
+        : QColor(QStringLiteral("#A6E3A1")));
+    dirItem->setData(Qt::UserRole,
+        isOut ? QStringLiteral("out") : QStringLiteral("in"));
+    m_transferTable->setItem(row, TC_DIR, dirItem);
+
+    auto* idItem = new QTableWidgetItem(
+        info.transferId.left(10) + QStringLiteral("\u2026"));
+    idItem->setData(Qt::UserRole, info.transferId);
+    m_transferTable->setItem(row, TC_ID, idItem);
+    m_transferTable->setItem(row, TC_NAME, new QTableWidgetItem(info.name));
+    m_transferTable->setItem(row, TC_SIZE, new QTableWidgetItem(sizeStr));
+    m_transferTable->setItem(row, TC_PEER,
+        new QTableWidgetItem(info.peerId.left(12) + QStringLiteral("\u2026")));
+    m_transferTable->setItem(row, TC_STATUS, new QTableWidgetItem(info.status));
+
+    auto* bar = qobject_cast<QProgressBar*>(
+        m_transferTable->cellWidget(row, TC_PROGRESS));
+    if (!bar) {
+        bar = new QProgressBar(m_transferTable);
+        bar->setRange(0, 100);
+        bar->setTextVisible(true);
+        bar->setStyleSheet(
+            QStringLiteral("QProgressBar { background:#313244; border:none; "
+                "border-radius:3px; height:14px; color:#CDD6F4; } "
+                "QProgressBar::chunk { background:%1; border-radius:3px; }")
+            .arg(isOut
+                ? QStringLiteral("#CBA6F7")
+                : QStringLiteral("#89B4FA")));
+        m_transferTable->setCellWidget(row, TC_PROGRESS, bar);
+    }
+    bar->setValue(static_cast<int>(info.progress));
+}
+
+void FileTransfer::updateTransferRow(const QString& transferId,
+    const QString& status, double progress)
+{
+    const int row = findTransferRow(transferId);
+    if (row < 0) return;
+    if (!status.isEmpty())
+        m_transferTable->setItem(row, TC_STATUS,
+            new QTableWidgetItem(status));
+    if (progress >= 0.0)
+        if (auto* bar = qobject_cast<QProgressBar*>(
+            m_transferTable->cellWidget(row, TC_PROGRESS)))
+            bar->setValue(static_cast<int>(progress));
+}
+
+// ---------------------------------------------------------------------------
+// Connect button
+// ---------------------------------------------------------------------------
 
 void FileTransfer::onConnectClicked()
 {
-    m_config.serverUrl = m_serverUrlEdit->text().isEmpty() ?
-        QStringLiteral("http://localhost:3000") : m_serverUrlEdit->text();
-    m_config.roomId = m_roomIdEdit->text().isEmpty() ?
-        QStringLiteral("default-room") : m_roomIdEdit->text();
-    m_config.password = m_passwordEdit->text().isEmpty() ?
-        QStringLiteral("password") : m_passwordEdit->text();
-    m_config.appType = QStringLiteral("desktop");
+    const QString server = m_serverEdit->text().trimmed();
+    const QString password = m_passwordEdit->text();
+    const bool    isCreate = m_createRadio->isChecked();
+    const QString roomId = isCreate
+        ? QString{}
+    : m_roomIdEdit->text().trimmed();
 
-    qInfo() << "[Connection] Connecting to" << m_config.serverUrl
-        << "with room" << m_config.roomId;
+    if (server.isEmpty() || password.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Missing Fields"),
+            QStringLiteral("Please fill in Server URL and Password."));
+        return;
+    }
+    if (!isCreate && roomId.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Missing Fields"),
+            QStringLiteral("Please fill in the Room ID to join."));
+        return;
+    }
 
-    m_signalingClient = new SignalingClient(m_config, this);
-    m_fileTransferManager = new FileTransferManager(m_signalingClient->socketIO(),
-        m_signalingClient->myPeerId(), this);
+    if (m_ftm) { m_ftm = nullptr; }
+    if (m_client) { m_client->deleteLater(); m_client = nullptr; }
 
-    connect(m_signalingClient, &SignalingClient::stage1Complete,
+    SignalingClient::Config cfg;
+    cfg.serverUrl = server;
+    cfg.roomId = roomId;
+    cfg.password = password;
+    cfg.mode = isCreate ? SignalingClient::Mode::CreateRoom
+        : SignalingClient::Mode::JoinRoom;
+
+    m_client = new SignalingClient(cfg, this);
+    connect(m_client, &SignalingClient::roomCreated,
+        this, &FileTransfer::onRoomCreated);
+    connect(m_client, &SignalingClient::stage1Complete,
         this, &FileTransfer::onStage1Complete);
-    connect(m_signalingClient, &SignalingClient::connectionFailed,
-        this, &FileTransfer::onConnectionFailed);
-    connect(m_signalingClient, &SignalingClient::loginFailed,
+    connect(m_client, &SignalingClient::loginFailed,
         this, &FileTransfer::onLoginFailed);
+    connect(m_client, &SignalingClient::connectionFailed,
+        this, &FileTransfer::onConnectionFailed);
 
-    connect(m_fileTransferManager, &FileTransferManager::incomingFileOffer,
-        this, &FileTransfer::onIncomingFileOffer);
-    connect(m_fileTransferManager, &FileTransferManager::transferAccepted,
-        this, &FileTransfer::onTransferAccepted);
-    connect(m_fileTransferManager, &FileTransferManager::transferRejected,
-        this, &FileTransfer::onTransferRejected);
-    connect(m_fileTransferManager, &FileTransferManager::transferCancelled,
-        this, &FileTransfer::onTransferCancelled);
-    connect(m_fileTransferManager, &FileTransferManager::transferProgress,
-        this, &FileTransfer::onTransferProgress);
-    connect(m_fileTransferManager, &FileTransferManager::transferComplete,
-        this, &FileTransfer::onTransferComplete);
-    connect(m_fileTransferManager, &FileTransferManager::transferError,
-        this, &FileTransfer::onTransferError);
-    connect(m_fileTransferManager, &FileTransferManager::dataChannelOpen,
-        this, &FileTransfer::onDataChannelOpen);
-    connect(m_fileTransferManager, &FileTransferManager::webRtcOfferReceived,
-        this, &FileTransfer::onWebRtcOfferReceived);
-    connect(m_fileTransferManager, &FileTransferManager::sendTransferInitiated,
-        this, &FileTransfer::onSendTransferInitiated);
-    connect(m_fileTransferManager, &FileTransferManager::sendTransferProgress,
-        this, &FileTransfer::onSendTransferProgress);
-    connect(m_fileTransferManager, &FileTransferManager::sendTransferComplete,
-        this, &FileTransfer::onSendTransferComplete);
-    connect(m_fileTransferManager, &FileTransferManager::sendTransferError,
-        this, &FileTransfer::onSendTransferError);
-    m_serverUrlEdit->setReadOnly(true);
-    m_roomIdEdit->setReadOnly(true);
-    m_passwordEdit->setReadOnly(true);
-    m_connectBtn->setEnabled(false);
-    m_disconnectBtn->setEnabled(true);
+    // ── Live peer presence ─────────────────────────────────────────────────
+    connect(m_client, &SignalingClient::peerJoined,
+        this, &FileTransfer::onPeerJoined, Qt::QueuedConnection);
+    connect(m_client, &SignalingClient::peerLeft,
+        this, &FileTransfer::onPeerLeft, Qt::QueuedConnection);
 
-    m_signalingClient->start();
+    setConnectionState(true);
+    m_client->start();
 }
 
-void FileTransfer::onDisconnectClicked()
+// ---------------------------------------------------------------------------
+// Send File button
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onSendFileClicked()
 {
-    qInfo() << "[Connection] Disconnecting from server";
-
-    if (m_signalingClient) {
-        // Stop heartbeat first
-        m_signalingClient->stopHeartbeat();
-
-        // Delete immediately with synchronous cleanup
-        m_signalingClient->disconnect();
-        m_signalingClient->deleteLater();
-        m_signalingClient = nullptr;
+    if (!m_ftm) {
+        QMessageBox::warning(this, QStringLiteral("Not Connected"),
+            QStringLiteral("Connect to a room before sending a file."));
+        return;
+    }
+    const QString targetPeer = m_peerCombo->currentText().trimmed();
+    if (targetPeer.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("No Peer Selected"),
+            QStringLiteral("Enter or select the Peer ID of the recipient."));
+        return;
+    }
+    if (m_pendingSendPath.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("No File Chosen"),
+            QStringLiteral("Click Browse\u2026 to choose a file before sending."));
+        return;
     }
 
-    if (m_fileTransferManager) {
-        m_fileTransferManager->disconnect();
-        m_fileTransferManager->deleteLater();
-        m_fileTransferManager = nullptr;
-    }
+    qInfo() << "[UI] Initiating send:"
+        << QFileInfo(m_pendingSendPath).fileName()
+        << "\u2192 peer:" << targetPeer;
 
-    m_serverUrlEdit->setReadOnly(false);
-    m_roomIdEdit->setReadOnly(false);
-    m_passwordEdit->setReadOnly(false);
-    m_connectBtn->setEnabled(true);
-    m_disconnectBtn->setEnabled(false);
+    m_ftm->sendFile(targetPeer, m_pendingSendPath);
 
-    m_isConnected = false;
-    m_connectionStatusLabel->setText(QStringLiteral("Not connected"));
-    m_connectionStatusLabel->setStyleSheet(
-        QStringLiteral("color: #f44336; font-weight: bold; font-size: 12px;"));
-    m_peersTable->setRowCount(0);
-    m_incomingStatusLabel->setText(QStringLiteral("Waiting for connection..."));
+    m_pendingSendPath.clear();
+    m_selectedFileLabel->setText(QStringLiteral("No file chosen"));
+    m_selectedFileLabel->setObjectName(QStringLiteral("fileLabelEmpty"));
+    m_selectedFileLabel->style()->unpolish(m_selectedFileLabel);
+    m_selectedFileLabel->style()->polish(m_selectedFileLabel);
+    m_sendBtn->setEnabled(false);
 }
 
-void FileTransfer::onLogLine(LogHandler::Level level, const QString& timestamp, const QString& message)
-{
-    QString colorCode;
-    QString levelStr;
-    switch (level) {
-    case LogHandler::Level::Debug:
-        colorCode = QStringLiteral("#888");
-        levelStr = QStringLiteral("[DBG]");
-        break;
-    case LogHandler::Level::Info:
-        colorCode = QStringLiteral("#0a0");
-        levelStr = QStringLiteral("[INF]");
-        break;
-    case LogHandler::Level::Warning:
-        colorCode = QStringLiteral("#ff6600");
-        levelStr = QStringLiteral("[WRN]");
-        break;
-    case LogHandler::Level::Critical:
-        colorCode = QStringLiteral("#f00");
-        levelStr = QStringLiteral("[CRT]");
-        break;
-    }
+// ---------------------------------------------------------------------------
+// Wire FileTransferManager signals
+// ---------------------------------------------------------------------------
 
-    QString logEntry = QString::fromLatin1("<span style='color:%1'>%2 %3 %4</span>")
-        .arg(colorCode, timestamp, levelStr, message);
-    m_logsEdit->appendHtml(logEntry);
+void FileTransfer::connectFtmSignals()
+{
+    if (!m_ftm) return;
+
+    connect(m_ftm, &FileTransferManager::incomingFileOffer,
+        this, &FileTransfer::onIncomingFileOffer, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferAccepted,
+        this, &FileTransfer::onTransferAccepted, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferRejected,
+        this, &FileTransfer::onTransferRejected, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferCancelled,
+        this, &FileTransfer::onTransferCancelled, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferProgress,
+        this, &FileTransfer::onTransferProgress, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferComplete,
+        this, &FileTransfer::onTransferComplete, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::transferError,
+        this, &FileTransfer::onTransferError, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::webRtcOfferReceived,
+        this, &FileTransfer::onWebRtcOfferReceived, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::outgoingFileOfferSent,
+        this, &FileTransfer::onOutgoingFileOfferSent, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::outgoingFileOfferAccepted,
+        this, &FileTransfer::onOutgoingFileOfferAccepted, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::outgoingFileOfferRejected,
+        this, &FileTransfer::onOutgoingFileOfferRejected, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::sendProgress,
+        this, &FileTransfer::onSendProgress, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::sendComplete,
+        this, &FileTransfer::onSendComplete, Qt::QueuedConnection);
+    connect(m_ftm, &FileTransferManager::sendError,
+        this, &FileTransfer::onSendError, Qt::QueuedConnection);
 }
 
-void FileTransfer::onStage1Complete(const QString& roomId, const QString& peerId,
-    const QJsonArray& peers)
+// ---------------------------------------------------------------------------
+// SignalingClient handlers
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onRoomCreated(const QString& roomId,
+    const QString& /*password*/)
 {
-    m_currentRoomId = roomId;
-    m_myPeerId = peerId;
-    m_isConnected = true;
-
-    qInfo() << "[Connection] Stage 1 complete. Room:" << roomId << "Peer:" << peerId;
-
-    m_connectionStatusLabel->setText(
-        QStringLiteral("Connected to Room: %1 | Your ID: %2").arg(roomId, peerId));
-    m_connectionStatusLabel->setStyleSheet(
-        QStringLiteral("color: #4CAF50; font-weight: bold; font-size: 12px;"));
-
-    m_peersTable->setRowCount(0);
-    for (const auto& peerVal : peers) {
-        const QJsonObject peer = peerVal.toObject();
-        const QString id = peer.value(QStringLiteral("id")).toString();
-
-        int row = m_peersTable->rowCount();
-        m_peersTable->insertRow(row);
-
-        QTableWidgetItem* idItem = new QTableWidgetItem(id);
-        QTableWidgetItem* statusItem = new QTableWidgetItem(QStringLiteral("Online"));
-        QTableWidgetItem* timeItem = new QTableWidgetItem(
-            QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")));
-
-        statusItem->setForeground(QColor(76, 175, 80));
-        m_peersTable->setItem(row, 0, idItem);
-        m_peersTable->setItem(row, 1, statusItem);
-        m_peersTable->setItem(row, 2, timeItem);
-    }
-
-    // Refresh peers list for sending
-    QTimer::singleShot(100, this, &FileTransfer::onRefreshPeersList);
-
-    m_incomingStatusLabel->setText(QStringLiteral("Connected - Waiting for file offers..."));
+    m_genRoomLabel->setText(roomId);
+    m_roomIdCopyLabel->setText(roomId);
+    qInfo() << "[Stage1] \U0001F3E0 Room created – ID:" << roomId;
+    QMessageBox::information(this,
+        QStringLiteral("Room Created"),
+        QStringLiteral(
+            "Your room has been created.\n\n"
+            "Room ID:  %1\n\n"
+            "Share this ID with the peers you want to invite.\n"
+            "Connecting now\u2026").arg(roomId));
 }
 
-
-void FileTransfer::onConnectionFailed(const QString& reason)
+void FileTransfer::onStage1Complete(const QString& roomId,
+    const QString& peerId, const QJsonArray& peers)
 {
-    m_isConnected = false;
-    m_connectionStatusLabel->setText(QStringLiteral("Connection Failed: %1").arg(reason));
-    m_connectionStatusLabel->setStyleSheet(
-        QStringLiteral("color: #f44336; font-weight: bold; font-size: 12px;"));
-    qCritical() << "[Connection] Failed:" << reason;
-    showNotification(QStringLiteral("Connection Error"), reason);
+    m_ftm = m_client->ftm();
+    connectFtmSignals();
+
+    m_peerCombo->setEnabled(true);
+    m_browseBtn->setEnabled(true);
+    populatePeerCombo(peers);   // fills combo + updates label
+
+    setConnectionState(false, true);
+    m_roomLabel->setText(roomId);
+    m_roomIdCopyLabel->setText(roomId);
+
+    if (!peerId.isEmpty()) {
+        m_peerIdLabel->setText(peerId);
+    }
+    else {
+        m_peerIdLabel->setText(QStringLiteral("(pending\u2026)"));
+        QTimer::singleShot(3000, this, [this]() {
+            if (m_client && !m_client->myPeerId().isEmpty())
+                m_peerIdLabel->setText(m_client->myPeerId());
+            });
+    }
+
+    qInfo() << "[Stage1] \u2705 Joined room:" << roomId
+        << "| Peers:" << peers.size() << "| FTM ready";
 }
 
 void FileTransfer::onLoginFailed(const QString& reason)
 {
-    m_isConnected = false;
-    m_connectionStatusLabel->setText(QStringLiteral("Login Failed: %1").arg(reason));
-    m_connectionStatusLabel->setStyleSheet(
-        QStringLiteral("color: #f44336; font-weight: bold; font-size: 12px;"));
-    qCritical() << "[Connection] Login failed:" << reason;
-    showNotification(QStringLiteral("Login Error"), reason);
+    setConnectionState(false, false);
+    qCritical() << "[Stage1] \u274C Login failed:" << reason;
+    QMessageBox::critical(this, QStringLiteral("Login Failed"), reason);
 }
 
-void FileTransfer::onIncomingFileOffer(const FileTransferManager::TransferInfo& info)
+void FileTransfer::onConnectionFailed(const QString& reason)
 {
-    m_transferCache[info.transferId] = info;
-
-    int row = m_incomingTable->rowCount();
-    m_incomingTable->insertRow(row);
-
-    QTableWidgetItem* nameItem = new QTableWidgetItem(info.name);
-    QTableWidgetItem* sizeItem = new QTableWidgetItem(formatFileSize(info.size));
-    QTableWidgetItem* fromItem = new QTableWidgetItem(info.senderId);
-    QTableWidgetItem* typeItem = new QTableWidgetItem(info.mimeType);
-    QTableWidgetItem* statusItem = new QTableWidgetItem(QStringLiteral("Pending"));
-
-    nameItem->setData(Qt::UserRole, info.transferId);
-    statusItem->setForeground(QColor(255, 152, 0));
-
-    m_incomingTable->setItem(row, 0, nameItem);
-    m_incomingTable->setItem(row, 1, sizeItem);
-    m_incomingTable->setItem(row, 2, fromItem);
-    m_incomingTable->setItem(row, 3, typeItem);
-    m_incomingTable->setItem(row, 4, statusItem);
-
-    m_transferRowMap[info.transferId] = row;
-
-    qInfo() << "[Transfer] Incoming file offer:" << info.name << "from" << info.senderId;
-    showNotification(QStringLiteral("New File Offer"),
-        QStringLiteral("File: %1 (%2 bytes)").arg(info.name).arg(info.size));
+    setConnectionState(false, false);
+    qCritical() << "[Stage1] \u274C Connection failed:" << reason;
+    QMessageBox::critical(this, QStringLiteral("Connection Failed"), reason);
 }
 
-void FileTransfer::onAcceptTransferClicked()
+// ---------------------------------------------------------------------------
+// Live peer presence handlers  ← NEW
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onPeerJoined(const QString& peerId,
+    const QString& appType)
 {
-    if (m_selectedTransferId.isEmpty()) return;
-    const QString fullPath = m_savePath + QStringLiteral("/") +
-        m_transferCache[m_selectedTransferId].name;
-    qInfo() << "[Transfer] Accepting transfer:" << m_selectedTransferId << "to" << fullPath;
-    m_fileTransferManager->acceptTransfer(m_selectedTransferId, fullPath);
+    addPeerToCombo(peerId);
+    qInfo() << "[UI] \U0001F7E2 Peer joined:"
+        << peerId << "appType:" << appType;
 }
 
-void FileTransfer::onRejectTransferClicked()
+void FileTransfer::onPeerLeft(const QString& peerId)
 {
-    if (m_selectedTransferId.isEmpty()) return;
-    qInfo() << "[Transfer] Rejecting transfer:" << m_selectedTransferId;
-    m_fileTransferManager->rejectTransfer(m_selectedTransferId);
+    removePeerFromCombo(peerId);
+    qInfo() << "[UI] \U0001F534 Peer left:" << peerId;
+}
+
+// ---------------------------------------------------------------------------
+// FileTransferManager handlers – receive side
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onIncomingFileOffer(
+    const FileTransferManager::TransferInfo& info)
+{
+    qInfo() << "[FT] \U0001F4E5 File offer from peer:"
+        << info.name
+        << QString::number(info.size / 1024.0, 'f', 1) + QStringLiteral(" KB")
+        << "| chunks:" << info.totalChunks
+        << "| from:" << info.peerId;
+
+    upsertTransferRow(info);
+    raise();
+    activateWindow();
+
+    const int btn = QMessageBox::question(this,
+        QStringLiteral("Incoming File Transfer"),
+        QStringLiteral(
+            "A peer wants to send you a file:\n\n"
+            "  Name:  %1\n"
+            "  Size:  %2 KB\n"
+            "  From:  %3\n\n"
+            "Accept the transfer?")
+        .arg(info.name,
+            QString::number(info.size / 1024.0, 'f', 1),
+            info.peerId),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes);
+
+    if (btn != QMessageBox::Yes) {
+        if (m_ftm) m_ftm->rejectTransfer(info.transferId);
+        return;
+    }
+
+    const QString savePath = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save Received File"),
+        QDir::homePath() + QDir::separator() + info.name,
+        QStringLiteral("All Files (*)"));
+
+    if (savePath.isEmpty()) {
+        if (m_ftm) m_ftm->rejectTransfer(info.transferId);
+        return;
+    }
+
+    qInfo() << "[FT] Accepted – save to:" << savePath;
+    if (m_ftm) m_ftm->acceptTransfer(info.transferId, savePath);
 }
 
 void FileTransfer::onTransferAccepted(const QString& transferId)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        QTableWidgetItem* statusItem = m_incomingTable->item(row, 4);
-        if (statusItem) {
-            statusItem->setText(QStringLiteral("Accepted"));
-            statusItem->setForeground(QColor(76, 175, 80));
-        }
-    }
-
-    if (m_transferCache.contains(transferId)) {
-        const auto& info = m_transferCache[transferId];
-        addTransferToTable(info);
-    }
-    qInfo() << "[Transfer] Transfer accepted:" << transferId;
+    updateTransferRow(transferId, QStringLiteral("waiting-webrtc"));
+    qInfo() << "[FT] \u2705 Transfer accepted – waiting for WebRTC:" << transferId;
 }
 
 void FileTransfer::onTransferRejected(const QString& transferId)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        m_incomingTable->removeRow(row);
-        m_transferRowMap.remove(transferId);
-    }
-    m_transferCache.remove(transferId);
-    qInfo() << "[Transfer] Transfer rejected:" << transferId;
+    updateTransferRow(transferId, QStringLiteral("rejected"));
+    qInfo() << "[FT] Transfer rejected –" << transferId;
 }
 
 void FileTransfer::onTransferCancelled(const QString& transferId)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        m_activeTransfersTable->removeRow(row);
-        m_transferRowMap.remove(transferId);
+    updateTransferRow(transferId, QStringLiteral("cancelled"));
+    qWarning() << "[FT] Transfer cancelled –" << transferId;
+}
+
+void FileTransfer::onTransferProgress(const QString& transferId,
+    double progress, int chunksReceived, int totalChunks)
+{
+    updateTransferRow(transferId, QStringLiteral("active"), progress);
+    qDebug() << "[FT] Progress:" << transferId
+        << QString::number(progress, 'f', 1) + QStringLiteral("%")
+        << chunksReceived << "/" << totalChunks;
+}
+
+void FileTransfer::onTransferComplete(const QString& transferId,
+    const QString& filePath)
+{
+    updateTransferRow(transferId, QStringLiteral("completed"), 100.0);
+    qInfo() << "[FT] \u2705 Receive complete –" << transferId
+        << "saved to:" << filePath;
+    QMessageBox::information(this,
+        QStringLiteral("Transfer Complete"),
+        QStringLiteral("File received successfully.\n\nSaved to:\n%1")
+        .arg(filePath));
+}
+
+void FileTransfer::onTransferError(const QString& transferId,
+    const QString& reason)
+{
+    updateTransferRow(transferId, QStringLiteral("error"));
+    qCritical() << "[FT] \u274C Transfer error –" << transferId << reason;
+}
+
+void FileTransfer::onWebRtcOfferReceived(const QString& transferId,
+    const QString& fromPeerId, const QJsonObject& offer)
+{
+    qInfo() << "[WebRTC] Offer received – transfer:" << transferId
+        << "from:" << fromPeerId;
+    qDebug() << "[WebRTC] SDP type:"
+        << offer.value(QStringLiteral("type")).toString();
+    updateTransferRow(transferId, QStringLiteral("negotiating"));
+}
+
+// ---------------------------------------------------------------------------
+// FileTransferManager handlers – send side
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onOutgoingFileOfferSent(const QString& transferId)
+{
+    // The FTM emits this immediately after inserting the TransferInfo, so
+    // the row is guaranteed to exist in transfers() by the time we get here.
+    if (m_ftm) {
+        const auto map = m_ftm->transfers();
+        if (map.contains(transferId))
+            upsertTransferRow(map[transferId]);
     }
-    m_transferCache.remove(transferId);
-    qInfo() << "[Transfer] Transfer cancelled:" << transferId;
+    updateTransferRow(transferId, QStringLiteral("offering"));
+    qInfo() << "[FT] \U0001F4E4 Outgoing offer sent – waiting for peer:"
+        << transferId;
 }
 
-void FileTransfer::onTransferProgress(const QString& transferId, double progress,
-    int currentChunk, int totalChunks)
+void FileTransfer::onOutgoingFileOfferAccepted(const QString& transferId)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        QTableWidgetItem* progressItem = m_activeTransfersTable->item(row, 2);
-        if (progressItem) {
-            progressItem->setText(QStringLiteral("%1%").arg(static_cast<int>(progress)));
-        }
-    }
-    m_activeStatusLabel->setText(
-        QStringLiteral("Transferring... %1% (%2/%3 chunks)")
-        .arg(static_cast<int>(progress), currentChunk, totalChunks));
+    updateTransferRow(transferId, QStringLiteral("webrtc-connecting"));
+    qInfo() << "[FT] \u2705 Peer accepted our offer – WebRTC starting:"
+        << transferId;
 }
 
-void FileTransfer::onTransferComplete(const QString& transferId, const QString& path)
+void FileTransfer::onOutgoingFileOfferRejected(const QString& transferId)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        m_activeTransfersTable->removeRow(row);
-        m_transferRowMap.remove(transferId);
-    }
-
-    if (m_transferCache.contains(transferId)) {
-        const auto& info = m_transferCache[transferId];
-
-        int row = m_completedTable->rowCount();
-        m_completedTable->insertRow(row);
-
-        QTableWidgetItem* nameItem = new QTableWidgetItem(info.name);
-        QTableWidgetItem* sizeItem = new QTableWidgetItem(formatFileSize(info.size));
-        QTableWidgetItem* timeItem = new QTableWidgetItem(
-            QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")));
-        QTableWidgetItem* pathItem = new QTableWidgetItem(path);
-        QTableWidgetItem* statusItem = new QTableWidgetItem(QStringLiteral("Completed"));
-
-        nameItem->setData(Qt::UserRole, transferId);
-        pathItem->setData(Qt::UserRole, path);
-        statusItem->setForeground(QColor(76, 175, 80));
-
-        m_completedTable->setItem(row, 0, nameItem);
-        m_completedTable->setItem(row, 1, sizeItem);
-        m_completedTable->setItem(row, 2, timeItem);
-        m_completedTable->setItem(row, 3, pathItem);
-        m_completedTable->setItem(row, 4, statusItem);
-
-        m_transferRowMap[transferId] = row;
-    }
-
-    m_activeStatusLabel->setText(QStringLiteral("All transfers completed!"));
-    qInfo() << "[Transfer] Transfer complete:" << transferId << "saved to" << path;
-    showNotification(QStringLiteral("Transfer Complete"),
-        QStringLiteral("File saved to: %1").arg(path));
+    updateTransferRow(transferId, QStringLiteral("rejected"));
+    qWarning() << "[FT] Peer rejected our file offer –" << transferId;
+    QMessageBox::information(this,
+        QStringLiteral("Offer Rejected"),
+        QStringLiteral(
+            "The peer declined your file transfer request.\n\nID: %1\u2026")
+        .arg(transferId.left(16)));
 }
 
-void FileTransfer::onTransferError(const QString& transferId, const QString& reason)
+void FileTransfer::onSendProgress(const QString& transferId,
+    double progress, int chunksSent, int totalChunks)
 {
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        QTableWidgetItem* statusItem = m_activeTransfersTable->item(row, 4);
-        if (statusItem) {
-            statusItem->setText(QStringLiteral("Error"));
-            statusItem->setForeground(QColor(244, 67, 54));
-        }
-    }
-    qCritical() << "[Transfer] Error in transfer" << transferId << ":" << reason;
-    showNotification(QStringLiteral("Transfer Error"), reason);
+    updateTransferRow(transferId, QStringLiteral("sending"), progress);
+    qDebug() << "[FT] Send progress:" << transferId
+        << QString::number(progress, 'f', 1) + QStringLiteral("%")
+        << chunksSent << "/" << totalChunks;
 }
 
-void FileTransfer::onDataChannelOpen(const QString& transferId)
+void FileTransfer::onSendComplete(const QString& transferId)
 {
-    qDebug() << "[WebRTC] DataChannel opened for transfer:" << transferId;
+    updateTransferRow(transferId, QStringLiteral("completed"), 100.0);
+    qInfo() << "[FT] \u2705 Send complete –" << transferId;
+    QMessageBox::information(this,
+        QStringLiteral("File Sent"),
+        QStringLiteral("File sent successfully.\n\nTransfer ID:\n%1")
+        .arg(transferId));
 }
 
-void FileTransfer::onWebRtcOfferReceived(const QString& transferId, const QString& fromPeer,
-    const QJsonObject& offer)
+void FileTransfer::onSendError(const QString& transferId,
+    const QString& reason)
 {
-    qDebug() << "[WebRTC] Offer received from:" << fromPeer << "for transfer:" << transferId;
+    updateTransferRow(transferId, QStringLiteral("error"));
+    qCritical() << "[FT] \u274C Send error –" << transferId << reason;
+    QMessageBox::critical(this,
+        QStringLiteral("Send Error"),
+        QStringLiteral("Failed to send file.\n\nReason: %1\nID: %2")
+        .arg(reason, transferId.left(16)));
 }
 
-void FileTransfer::onBrowseSaveLocation()
+// ---------------------------------------------------------------------------
+// Transfer table buttons
+// ---------------------------------------------------------------------------
+
+void FileTransfer::onAcceptClicked()
 {
-    const QString dir = QFileDialog::getExistingDirectory(this,
-        QStringLiteral("Select Save Location"),
-        m_savePath,
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-
-    if (!dir.isEmpty()) {
-        m_savePath = dir;
-        m_savePathEdit->setText(m_savePath);
-        qInfo() << "[UI] Save location changed to:" << m_savePath;
-    }
-}
-
-void FileTransfer::onCancelTransfer()
-{
-    if (m_selectedTransferId.isEmpty()) return;
-    qInfo() << "[Transfer] Cancelling transfer:" << m_selectedTransferId;
-    m_fileTransferManager->cancelTransfer(m_selectedTransferId);
-}
-
-void FileTransfer::onOpenTransferredFile()
-{
-    if (m_selectedTransferId.isEmpty()) return;
-    const QString path = m_transferCache[m_selectedTransferId].savePath;
-    if (!path.isEmpty() && QFile::exists(path)) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-        qInfo() << "[UI] Opened file:" << path;
-    }
-}
-
-void FileTransfer::onOpenTransferFolder()
-{
-    if (m_selectedTransferId.isEmpty()) return;
-    const QString path = m_transferCache[m_selectedTransferId].savePath;
-    if (!path.isEmpty()) {
-        QFileInfo fileInfo(path);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(fileInfo.absolutePath()));
-        qInfo() << "[UI] Opened folder:" << fileInfo.absolutePath();
-    }
-}
-
-void FileTransfer::onClearCompletedTransfers()
-{
-    m_completedTable->setRowCount(0);
-    m_transferRowMap.clear();
-    m_transferCache.clear();
-    qInfo() << "[UI] Cleared completed transfers";
-}
-
-void FileTransfer::updatePeersList()
-{
-}
-
-void FileTransfer::updateTransferUI(const QString& transferId)
-{
-    if (!m_transferCache.contains(transferId)) return;
-}
-
-void FileTransfer::showNotification(const QString& title, const QString& message)
-{
-    if (m_trayIcon && m_trayIcon->isVisible()) {
-        m_trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 5000);
-    }
-}
-
-void FileTransfer::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason)
-{
-    if (reason == QSystemTrayIcon::DoubleClick) {
-        toggleWindowVisibility();
-    }
-}
-
-void FileTransfer::toggleWindowVisibility()
-{
-    if (isVisible()) {
-        // Don't close, just hide to tray
-        hide();
-    }
-    else {
-        showNormal();
-        activateWindow();
-    }
-}
-
-QString FileTransfer::formatFileSize(qint64 bytes) const
-{
-    static constexpr qint64 KB = 1024;
-    static constexpr qint64 MB = KB * 1024;
-    static constexpr qint64 GB = MB * 1024;
-
-    if (bytes >= GB) {
-        return QString::number(static_cast<double>(bytes) / GB, 'f', 2) + QStringLiteral(" GB");
-    }
-    else if (bytes >= MB) {
-        return QString::number(static_cast<double>(bytes) / MB, 'f', 2) + QStringLiteral(" MB");
-    }
-    else if (bytes >= KB) {
-        return QString::number(static_cast<double>(bytes) / KB, 'f', 2) + QStringLiteral(" KB");
-    }
-    else {
-        return QString::number(bytes) + QStringLiteral(" B");
-    }
-}
-
-void FileTransfer::addTransferToTable(const FileTransferManager::TransferInfo& info)
-{
-    int row = m_activeTransfersTable->rowCount();
-    m_activeTransfersTable->insertRow(row);
-
-    QTableWidgetItem* idItem = new QTableWidgetItem(info.transferId);
-    QTableWidgetItem* nameItem = new QTableWidgetItem(info.name);
-    QTableWidgetItem* progressItem = new QTableWidgetItem(QStringLiteral("0%"));
-    QTableWidgetItem* speedItem = new QTableWidgetItem(QStringLiteral("--"));
-    QTableWidgetItem* statusItem = new QTableWidgetItem(QStringLiteral("Active"));
-    QTableWidgetItem* timeItem = new QTableWidgetItem(QStringLiteral("--"));
-
-    idItem->setData(Qt::UserRole, info.transferId);
-    statusItem->setForeground(QColor(33, 150, 243));
-
-    m_activeTransfersTable->setItem(row, 0, idItem);
-    m_activeTransfersTable->setItem(row, 1, nameItem);
-    m_activeTransfersTable->setItem(row, 2, progressItem);
-    m_activeTransfersTable->setItem(row, 3, speedItem);
-    m_activeTransfersTable->setItem(row, 4, statusItem);
-    m_activeTransfersTable->setItem(row, 5, timeItem);
-
-    m_transferRowMap[info.transferId] = row;
-}
-
-void FileTransfer::updateTransferRow(const QString& transferId)
-{
-    if (!m_transferRowMap.contains(transferId)) return;
-}
-
-void FileTransfer::onBrowseSendFile()
-{
-    const QString fileName = QFileDialog::getOpenFileName(this,
-        QStringLiteral("Select File to Send"),
-        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+    const int row = m_transferTable->currentRow();
+    if (row < 0 || !m_ftm) return;
+    const QTableWidgetItem* idItem = m_transferTable->item(row, TC_ID);
+    if (!idItem) return;
+    const QString transferId = idItem->data(Qt::UserRole).toString();
+    const QString fileName =
+        m_transferTable->item(row, TC_NAME)
+        ? m_transferTable->item(row, TC_NAME)->text()
+        : QStringLiteral("received_file");
+    const QString savePath = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save Received File"),
+        QDir::homePath() + QDir::separator() + fileName,
         QStringLiteral("All Files (*)"));
-
-    if (!fileName.isEmpty()) {
-        m_selectedSendFilePath = fileName;
-        QFileInfo fileInfo(fileName);
-        m_sendFilePathEdit->setText(fileInfo.fileName() +
-            QStringLiteral(" (") + formatFileSize(fileInfo.size()) + QStringLiteral(")"));
-
-        // Enable send button if peer is also selected
-        if (!m_selectedSendToPeerId.isEmpty()) {
-            m_sendFileBtn->setEnabled(true);
-        }
-
-        qInfo() << "[Send] File selected:" << fileName;
-    }
+    if (savePath.isEmpty()) return;
+    m_ftm->acceptTransfer(transferId, savePath);
+    m_acceptBtn->setEnabled(false);
+    m_rejectBtn->setEnabled(false);
 }
 
-void FileTransfer::onPeerSelectionChanged(int index)
+void FileTransfer::onRejectClicked()
 {
-    if (index <= 0) {
-        m_selectedSendToPeerId = "";
-        m_sendFileBtn->setEnabled(false);
-        m_sendStatusLabel->setText(QStringLiteral("Select a peer to send to"));
-        return;
-    }
-
-    m_selectedSendToPeerId = m_peerComboBox->currentData().toString();
-    QString peerName = m_peerComboBox->currentText();
-
-    // Enable send button if file is also selected
-    if (!m_selectedSendFilePath.isEmpty()) {
-        m_sendFileBtn->setEnabled(true);
-        m_sendStatusLabel->setText(QStringLiteral("Ready to send to: %1").arg(peerName));
-    }
-
-    qInfo() << "[Send] Peer selected:" << peerName << "ID:" << m_selectedSendToPeerId;
+    const int row = m_transferTable->currentRow();
+    if (row < 0 || !m_ftm) return;
+    const QTableWidgetItem* idItem = m_transferTable->item(row, TC_ID);
+    if (!idItem) return;
+    m_ftm->rejectTransfer(idItem->data(Qt::UserRole).toString());
+    m_acceptBtn->setEnabled(false);
+    m_rejectBtn->setEnabled(false);
 }
 
-void FileTransfer::onRefreshPeersList()
+void FileTransfer::onCancelClicked()
 {
-    m_peerComboBox->clear();
-    m_peerComboBox->addItem(QStringLiteral("-- Select a peer --"), "");
-    m_peerIdMap.clear();
+    const int row = m_transferTable->currentRow();
+    if (row < 0 || !m_ftm) return;
+    const QTableWidgetItem* idItem = m_transferTable->item(row, TC_ID);
+    if (!idItem) return;
+    m_ftm->cancelTransfer(idItem->data(Qt::UserRole).toString());
+    m_cancelBtn->setEnabled(false);
+}
 
-    for (int row = 0; row < m_peersTable->rowCount(); ++row) {
-        QTableWidgetItem* idItem = m_peersTable->item(row, 0);
-        if (idItem) {
-            QString peerId = idItem->text();
-            // Don't add self
-            if (peerId != m_myPeerId) {
-                QString displayName = QStringLiteral("Peer: %1").arg(peerId.left(8));
-                m_peerComboBox->addItem(displayName, peerId);
-                m_peerIdMap[displayName] = peerId;
-            }
-        }
-    }
+// ---------------------------------------------------------------------------
+// Log panel
+// ---------------------------------------------------------------------------
 
-    if (m_peerComboBox->count() <= 1) {
-        m_sendStatusLabel->setText(QStringLiteral("No other peers in the room"));
-        m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #f44336; font-size: 12px;"));
+void FileTransfer::onClearLogsClicked() { m_logView->clear(); }
+
+void FileTransfer::onExportLogsClicked()
+{
+    const QString path = QFileDialog::getSaveFileName(this,
+        QStringLiteral("Export Log"),
+        QStringLiteral("FileTransfer-log-%1.txt").arg(
+            QDateTime::currentDateTime()
+            .toString(QStringLiteral("yyyyMMdd-HHmmss"))),
+        QStringLiteral("Text Files (*.txt);;All Files (*)"));
+    if (path.isEmpty()) return;
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << m_logView->toPlainText();
+        qInfo() << "[UI] Log exported to:" << path;
     }
     else {
-        m_sendStatusLabel->setText(QStringLiteral("Select a peer to send to"));
-        m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #888; font-size: 12px;"));
-    }
-
-    qInfo() << "[Send] Peers list refreshed. Total peers:" << (m_peerComboBox->count() - 1);
-}
-
-void FileTransfer::onSendFileClicked()
-{
-    if (m_selectedSendFilePath.isEmpty() || m_selectedSendToPeerId.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("Invalid Selection"),
-            QStringLiteral("Please select both a file and a peer"));
-        return;
-    }
-
-    QFileInfo fileInfo(m_selectedSendFilePath);
-    if (!fileInfo.exists()) {
-        QMessageBox::critical(this, QStringLiteral("File Error"),
-            QStringLiteral("Selected file no longer exists"));
-        m_sendFilePathEdit->clear();
-        m_selectedSendFilePath = "";
-        return;
-    }
-
-    qInfo() << "[Send] Initiating file transfer to" << m_selectedSendToPeerId
-        << "File:" << m_selectedSendFilePath;
-
-    // Send to FileTransferManager
-    if (m_fileTransferManager) {
-        m_fileTransferManager->sendFile(m_selectedSendFilePath, m_selectedSendToPeerId);
-    }
-
-    // Reset UI
-    m_sendFilePathEdit->clear();
-    m_selectedSendFilePath = "";
-    m_sendFileBtn->setEnabled(false);
-}
-
-void FileTransfer::onSendTransferInitiated(const QString& transferId, const QString& toPeerId)
-{
-    qInfo() << "[Send] Transfer initiated. ID:" << transferId << "To:" << toPeerId;
-
-    if (m_transferCache.contains(transferId)) {
-        const auto& info = m_transferCache[transferId];
-        addOutgoingTransferToTable(transferId, info.name, toPeerId, info.size);
-    }
-
-    m_sendStatusLabel->setText(QStringLiteral("Sending file to %1...").arg(toPeerId.left(8)));
-    m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #ff9800; font-size: 12px;"));
-
-    showNotification(QStringLiteral("Sending File"),
-        QStringLiteral("Started sending to peer: %1").arg(toPeerId.left(8)));
-}
-
-void FileTransfer::onSendTransferProgress(const QString& transferId, double progress)
-{
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        if (row < m_outgoingTransfersTable->rowCount()) {
-            QTableWidgetItem* progressItem = m_outgoingTransfersTable->item(row, 3);
-            if (progressItem) {
-                progressItem->setText(QStringLiteral("%1%").arg(static_cast<int>(progress)));
-            }
-        }
+        QMessageBox::critical(this, QStringLiteral("Export Failed"),
+            QStringLiteral("Could not write to: ") + path);
     }
 }
 
-void FileTransfer::onSendTransferComplete(const QString& transferId)
+void FileTransfer::onLogLine(LogHandler::Level level,
+    const QString& timestamp, const QString& message)
 {
-    qInfo() << "[Send] Transfer complete. ID:" << transferId;
+    appendLog(level, timestamp, message);
+}
 
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        if (row < m_outgoingTransfersTable->rowCount()) {
-            QTableWidgetItem* statusItem = m_outgoingTransfersTable->item(row, 4);
-            if (statusItem) {
-                statusItem->setText(QStringLiteral("Completed"));
-                statusItem->setForeground(QColor(76, 175, 80));
-            }
-        }
+void FileTransfer::appendLog(LogHandler::Level level,
+    const QString& timestamp, const QString& message)
+{
+    const char* color = kColorDebug;
+    const char* prefix = "DBG";
+    switch (level) {
+    case LogHandler::Level::Debug:    color = kColorDebug;    prefix = "DBG"; break;
+    case LogHandler::Level::Info:     color = kColorInfo;     prefix = "INF"; break;
+    case LogHandler::Level::Warning:  color = kColorWarning;  prefix = "WRN"; break;
+    case LogHandler::Level::Critical: color = kColorCritical; prefix = "ERR"; break;
     }
-
-    m_sendStatusLabel->setText(QStringLiteral("File sent successfully!"));
-    m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #4CAF50; font-size: 12px;"));
-
-    showNotification(QStringLiteral("Send Complete"),
-        QStringLiteral("File sent successfully"));
-}
-
-void FileTransfer::onSendTransferError(const QString& transferId, const QString& reason)
-{
-    qCritical() << "[Send] Transfer error. ID:" << transferId << "Reason:" << reason;
-
-    if (m_transferRowMap.contains(transferId)) {
-        int row = m_transferRowMap[transferId];
-        if (row < m_outgoingTransfersTable->rowCount()) {
-            QTableWidgetItem* statusItem = m_outgoingTransfersTable->item(row, 4);
-            if (statusItem) {
-                statusItem->setText(QStringLiteral("Error"));
-                statusItem->setForeground(QColor(244, 67, 54));
-            }
-        }
-    }
-
-    m_sendStatusLabel->setText(QStringLiteral("Error sending file: %1").arg(reason));
-    m_sendStatusLabel->setStyleSheet(QStringLiteral("color: #f44336; font-size: 12px;"));
-
-    showNotification(QStringLiteral("Send Error"), reason);
-}
-
-void FileTransfer::addOutgoingTransferToTable(const QString& transferId,
-    const QString& fileName,
-    const QString& toPeerId,
-    qint64 fileSize)
-{
-    int row = m_outgoingTransfersTable->rowCount();
-    m_outgoingTransfersTable->insertRow(row);
-
-    QTableWidgetItem* nameItem = new QTableWidgetItem(fileName);
-    QTableWidgetItem* sizeItem = new QTableWidgetItem(formatFileSize(fileSize));
-    QTableWidgetItem* peerItem = new QTableWidgetItem(toPeerId.left(8));
-    QTableWidgetItem* progressItem = new QTableWidgetItem(QStringLiteral("0%"));
-    QTableWidgetItem* statusItem = new QTableWidgetItem(QStringLiteral("Sending"));
-    QTableWidgetItem* speedItem = new QTableWidgetItem(QStringLiteral("--"));
-
-    nameItem->setData(Qt::UserRole, transferId);
-    statusItem->setForeground(QColor(33, 150, 243));
-
-    m_outgoingTransfersTable->setItem(row, 0, nameItem);
-    m_outgoingTransfersTable->setItem(row, 1, sizeItem);
-    m_outgoingTransfersTable->setItem(row, 2, peerItem);
-    m_outgoingTransfersTable->setItem(row, 3, progressItem);
-    m_outgoingTransfersTable->setItem(row, 4, statusItem);
-    m_outgoingTransfersTable->setItem(row, 5, speedItem);
-
-    m_transferRowMap[transferId] = row;
-    m_outgoingTransferMap[transferId] = toPeerId;
-}
-
-
-void FileTransfer::changeEvent(QEvent* e)
-{
-    QMainWindow::changeEvent(e);
-    if (e->type() == QEvent::WindowStateChange) {
-        // Only minimize to tray, don't intercept close
-        if (isMinimized() && m_trayIcon && m_trayIcon->isVisible()) {
-            hide();
-            e->ignore();
-        }
-    }
-}
-
-void FileTransfer::closeEvent(QCloseEvent* e)
-{
-    // Gracefully disconnect if connected
-    if (m_signalingClient) {
-        qInfo() << "[Connection] Closing application - disconnecting from server";
-        onDisconnectClicked();
-
-        // Give some time for cleanup
-        QApplication::processEvents();
-    }
-
-    // If tray icon is visible AND we're minimizing (not closing), hide instead
-    if (m_trayIcon && m_trayIcon->isVisible() && isMinimized()) {
-        hide();
-        e->ignore();
-        return;
-    }
-
-    // Accept the close event and cleanup
-    qInfo() << "[UI] Application closing";
-
-    // Save settings before closing
-    saveSettings();
-
-    // Accept close event to allow application to exit
-    QMainWindow::closeEvent(e);
-
-    // Force application quit
-    QApplication::quit();
-}
-
-void FileTransfer::loadSettings()
-{
-    QSettings settings(QStringLiteral("FileTransfer"), QStringLiteral("FileTransferManager"));
-    restoreGeometry(settings.value(QStringLiteral("geometry")).toByteArray());
-    restoreState(settings.value(QStringLiteral("windowState")).toByteArray());
-    m_savePath = settings.value(QStringLiteral("savePath"),
-        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
-    m_serverUrlEdit->setText(settings.value(QStringLiteral("serverUrl"),
-        QStringLiteral("http://localhost:3000")).toString());
-    m_roomIdEdit->setText(settings.value(QStringLiteral("roomId"),
-        QStringLiteral("default-room")).toString());
-}
-
-void FileTransfer::saveSettings()
-{
-    QSettings settings(QStringLiteral("FileTransfer"), QStringLiteral("FileTransferManager"));
-    settings.setValue(QStringLiteral("geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("windowState"), saveState());
-    settings.setValue(QStringLiteral("savePath"), m_savePath);
-    settings.setValue(QStringLiteral("serverUrl"), m_serverUrlEdit->text());
-    settings.setValue(QStringLiteral("roomId"), m_roomIdEdit->text());
+    const QString html = QStringLiteral(
+        "<span style='color:#6C7086;'>[%1]</span> "
+        "<span style='color:%2;font-weight:bold;'>[%3]</span> "
+        "<span style='color:%2;'>%4</span>")
+        .arg(timestamp.toHtmlEscaped(),
+            QLatin1String(color),
+            QLatin1String(prefix),
+            message.toHtmlEscaped());
+    m_logView->append(html);
+    m_logView->verticalScrollBar()->setValue(
+        m_logView->verticalScrollBar()->maximum());
 }

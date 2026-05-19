@@ -1,22 +1,29 @@
-#ifndef FILETRANSFER_H
-#define FILETRANSFER_H
+#pragma once
+
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 
 #include <QMainWindow>
-#include <QListWidget>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QLabel>
-#include <QTabWidget>
-#include <QTableWidget>
-#include <QSystemTrayIcon>
+#include <QApplication>
+#include <QDir>
 #include <QLineEdit>
-#include <QCloseEvent>
-#include <QMap>
-#include <QPlainTextEdit>
 #include <QComboBox>
-#include "ui_FileTransfer.h"
-#include "FileTransferManager.h"
+#include <QPushButton>
+#include <QTextEdit>
+#include <QLabel>
+#include <QProgressBar>
+#include <QGroupBox>
+#include <QTableWidget>
+#include <QRadioButton>
+#include <QJsonArray>
+#include <QJsonObject>
+
 #include "SignalingClient.h"
+#include "FileTransferManager.h"
 #include "LogHandler.h"
 
 class FileTransfer : public QMainWindow
@@ -25,153 +32,124 @@ class FileTransfer : public QMainWindow
 
 public:
     explicit FileTransfer(QWidget* parent = nullptr);
-    ~FileTransfer();
-
-protected:
-    void changeEvent(QEvent* e) override;
-    void closeEvent(QCloseEvent* e) override;
 
 private slots:
-    // Connection & Signaling
-    void onStage1Complete(const QString& roomId, const QString& peerId,
-        const QJsonArray& peers);
-    void onConnectionFailed(const QString& reason);
-    void onLoginFailed(const QString& reason);
+    // Connection panel
+    void onConnectClicked();
+    void onModeChanged();
+    void onClearLogsClicked();
+    void onExportLogsClicked();
 
-    // Send File Tab
-    void onBrowseSendFile();
+    // Send file
     void onSendFileClicked();
-    void onPeerSelectionChanged(int index);
-    void onRefreshPeersList();
 
-    // Incoming File Offers
+    // SignalingClient
+    void onRoomCreated(const QString& roomId, const QString& password);
+    void onStage1Complete(const QString& roomId,
+        const QString& peerId,
+        const QJsonArray& peers);
+    void onLoginFailed(const QString& reason);
+    void onConnectionFailed(const QString& reason);
+
+    // Peer presence – live updates to the peer combo
+    void onPeerJoined(const QString& peerId, const QString& appType);
+    void onPeerLeft(const QString& peerId);
+
+    // FileTransferManager – receive side
     void onIncomingFileOffer(const FileTransferManager::TransferInfo& info);
-    void onAcceptTransferClicked();
-    void onRejectTransferClicked();
-
-    // Transfer Status
     void onTransferAccepted(const QString& transferId);
     void onTransferRejected(const QString& transferId);
     void onTransferCancelled(const QString& transferId);
     void onTransferProgress(const QString& transferId, double progress,
-        int currentChunk, int totalChunks);
-    void onTransferComplete(const QString& transferId, const QString& path);
+        int chunksReceived, int totalChunks);
+    void onTransferComplete(const QString& transferId,
+        const QString& filePath);
     void onTransferError(const QString& transferId, const QString& reason);
-    void onDataChannelOpen(const QString& transferId);
-    void onWebRtcOfferReceived(const QString& transferId, const QString& fromPeer,
+
+    // FileTransferManager – send side
+    void onOutgoingFileOfferSent(const QString& transferId);
+    void onOutgoingFileOfferAccepted(const QString& transferId);
+    void onOutgoingFileOfferRejected(const QString& transferId);
+    void onSendProgress(const QString& transferId, double progress,
+        int chunksSent, int totalChunks);
+    void onSendComplete(const QString& transferId);
+    void onSendError(const QString& transferId, const QString& reason);
+
+    // WebRTC signaling (logged only)
+    void onWebRtcOfferReceived(const QString& transferId,
+        const QString& fromPeerId,
         const QJsonObject& offer);
 
-    // Outgoing transfers
-    void onSendTransferInitiated(const QString& transferId, const QString& toPeerId);
-    void onSendTransferProgress(const QString& transferId, double progress);
-    void onSendTransferComplete(const QString& transferId);
-    void onSendTransferError(const QString& transferId, const QString& reason);
+    // Transfer table buttons
+    void onAcceptClicked();
+    void onRejectClicked();
+    void onCancelClicked();
 
-    // File Operations
-    void onBrowseSaveLocation();
-    void onCancelTransfer();
-    void onOpenTransferredFile();
-    void onOpenTransferFolder();
-    void onClearCompletedTransfers();
-
-    // UI Updates
-    void updatePeersList();
-    void updateTransferUI(const QString& transferId);
-    void showNotification(const QString& title, const QString& message);
-
-    // Tray Icon
-    void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
-    void toggleWindowVisibility();
-
-    // Logging
-    void onLogLine(LogHandler::Level level, const QString& timestamp, const QString& message);
-    void onConnectClicked();
-    void onDisconnectClicked();
+    // Log handler
+    void onLogLine(LogHandler::Level level,
+        const QString& timestamp,
+        const QString& message);
 
 private:
-    void setupUI();
-    void connectSignals();
-    void initializeConnections();
-    void loadSettings();
-    void saveSettings();
-    void createSettingsDialog();
-    void createTrayIcon();
-    QString formatFileSize(qint64 bytes) const;
-    void addTransferToTable(const FileTransferManager::TransferInfo& info);
-    void updateTransferRow(const QString& transferId);
-    void addOutgoingTransferToTable(const QString& transferId, const QString& fileName,
-        const QString& toPeerId, qint64 fileSize);
+    void buildUi();
+    void setConnectionState(bool connecting, bool connected = false);
+    void populatePeerCombo(const QJsonArray& peers);
 
-    // UI Components
-    Ui::FileTransferClass ui;
-    QTabWidget* m_tabWidget;
+    // Add / remove a single peer in the combo without clearing it.
+    void addPeerToCombo(const QString& peerId);
+    void removePeerFromCombo(const QString& peerId);
+    void updatePeersLabel();
 
-    // Send File Tab
-    QComboBox* m_peerComboBox;
-    QLineEdit* m_sendFilePathEdit;
-    QPushButton* m_browseSendFileBtn;
-    QPushButton* m_sendFileBtn;
-    QPushButton* m_refreshPeersBtn;
-    QLabel* m_sendStatusLabel;
-    QTableWidget* m_outgoingTransfersTable;
+    void connectFtmSignals();
+    void appendLog(LogHandler::Level level,
+        const QString& timestamp,
+        const QString& message);
 
-    // Incoming Transfers Tab
-    QTableWidget* m_incomingTable;
-    QLabel* m_incomingStatusLabel;
-    QLineEdit* m_savePathEdit;
-    QPushButton* m_browseSavePathBtn;
-    QPushButton* m_acceptBtn;
-    QPushButton* m_rejectBtn;
+    // Transfer table helpers
+    void upsertTransferRow(const FileTransferManager::TransferInfo& info);
+    void updateTransferRow(const QString& transferId,
+        const QString& status,
+        double         progress = -1.0);
+    int  findTransferRow(const QString& transferId) const;
 
-    // Active Transfers Tab
-    QTableWidget* m_activeTransfersTable;
-    QLabel* m_activeStatusLabel;
-    QPushButton* m_cancelTransferBtn;
+    // ── Connection panel ──────────────────────────────────────────────────
+    QLineEdit* m_serverEdit = nullptr;
+    QRadioButton* m_joinRadio = nullptr;
+    QRadioButton* m_createRadio = nullptr;
+    QWidget* m_joinWidget = nullptr;
+    QLineEdit* m_roomIdEdit = nullptr;
+    QWidget* m_createWidget = nullptr;
+    QLabel* m_genRoomLabel = nullptr;
+    QLineEdit* m_passwordEdit = nullptr;
+    QPushButton* m_connectBtn = nullptr;
 
-    // Completed Transfers Tab
-    QTableWidget* m_completedTable;
-    QPushButton* m_openFileBtn;
-    QPushButton* m_openFolderBtn;
-    QPushButton* m_clearCompletedBtn;
+    // ── Status panel ──────────────────────────────────────────────────────
+    QLabel* m_statusLabel = nullptr;
+    QLabel* m_roomLabel = nullptr;
+    QLabel* m_roomIdCopyLabel = nullptr;
+    QLabel* m_peerIdLabel = nullptr;
+    QLabel* m_peersLabel = nullptr;
+    QProgressBar* m_progressBar = nullptr;
 
-    // Peers Tab
-    QTableWidget* m_peersTable;
-    QLabel* m_connectionStatusLabel;
+    // ── Send File panel ───────────────────────────────────────────────────
+    QComboBox* m_peerCombo = nullptr;
+    QLabel* m_selectedFileLabel = nullptr;
+    QPushButton* m_browseBtn = nullptr;
+    QPushButton* m_sendBtn = nullptr;
+    QString       m_pendingSendPath;
 
-    // Logs Tab
-    QPlainTextEdit* m_logsEdit;
-    QPushButton* m_clearLogsBtn;
+    // ── Transfer panel ────────────────────────────────────────────────────
+    QTableWidget* m_transferTable = nullptr;
+    QPushButton* m_acceptBtn = nullptr;
+    QPushButton* m_rejectBtn = nullptr;
+    QPushButton* m_cancelBtn = nullptr;
 
-    // Settings
-    QLineEdit* m_serverUrlEdit;
-    QLineEdit* m_roomIdEdit;
-    QLineEdit* m_passwordEdit;
-    QPushButton* m_connectBtn;
-    QPushButton* m_disconnectBtn;
+    // ── Log panel ─────────────────────────────────────────────────────────
+    QTextEdit* m_logView = nullptr;
+    QPushButton* m_clearBtn = nullptr;
+    QPushButton* m_exportBtn = nullptr;
 
-    // System Tray
-    QSystemTrayIcon* m_trayIcon;
-    QMenu* m_trayMenu;
-
-    // Backend
-    SignalingClient* m_signalingClient;
-    FileTransferManager* m_fileTransferManager;
-
-    // State
-    QString m_currentRoomId;
-    QString m_myPeerId;
-    QString m_savePath;
-    QString m_selectedTransferId;
-    QString m_selectedSendFilePath;
-    QString m_selectedSendToPeerId;
-    QMap<QString, FileTransferManager::TransferInfo> m_transferCache;
-    QMap<QString, int> m_transferRowMap;
-    QMap<QString, QString> m_peerIdMap;  // Maps display name to peer ID
-    QMap<QString, QString> m_outgoingTransferMap;  // Maps transfer ID to peer ID
-    bool m_isConnected;
-
-    // Configuration
-    SignalingClient::Config m_config;
+    // ── Backend ───────────────────────────────────────────────────────────
+    SignalingClient* m_client = nullptr;
+    FileTransferManager* m_ftm = nullptr;
 };
-
-#endif // FILETRANSFER_H
