@@ -3,6 +3,7 @@
 #include <QString>
 #include <QDateTime>
 #include <QtMessageHandler>
+#include <QMetaObject>
 
 class LogHandler : public QObject
 {
@@ -31,8 +32,6 @@ private:
         const QMessageLogContext&,
         const QString& msg)
     {
-        const QString ts = QDateTime::currentDateTime()
-            .toString(QStringLiteral("hh:mm:ss.zzz"));
         Level level = Level::Debug;
         switch (type) {
         case QtDebugMsg:    level = Level::Debug;    break;
@@ -41,7 +40,17 @@ private:
         case QtCriticalMsg:
         case QtFatalMsg:    level = Level::Critical; break;
         }
-        emit instance()->logLine(level, ts, msg);
+
+        const QString ts = QDateTime::currentDateTime()
+            .toString(QStringLiteral("hh:mm:ss.zzz"));
+
+        // Thread-safe signal emission via queued connection
+        QMetaObject::invokeMethod(
+            instance(),
+            [level, ts, msg]() {
+                emit instance()->logLine(level, ts, msg);
+            },
+            Qt::QueuedConnection);
     }
 };
 Q_DECLARE_METATYPE(LogHandler::Level)

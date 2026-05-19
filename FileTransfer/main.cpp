@@ -9,7 +9,7 @@ int main(int argc, char* argv[])
     app.setApplicationName("File Transfer Manager");
     app.setApplicationVersion("1.0.0");
     //app.setQuitOnLastWindowClosed(false);  // Allow tray to keep app alive
-
+    LogHandler::instance()->install();
     FileTransfer window;
     window.show();
 
