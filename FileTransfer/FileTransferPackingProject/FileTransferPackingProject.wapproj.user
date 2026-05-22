@@ -5,5 +5,11 @@
     <AppxShowAllApps>False</AppxShowAllApps>
     <AppxBuildConfigurationSelection>x64</AppxBuildConfigurationSelection>
     <PackageOptionalProjectsInIdeBuilds>False</PackageOptionalProjectsInIdeBuilds>
+    <Source>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</Source>
+    <SmallTileSource>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</SmallTileSource>
+    <MediumTileSource>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</MediumTileSource>
+    <LargeTileSource>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</LargeTileSource>
+    <AppIconSource>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</AppIconSource>
+    <PackageLogoSource>D:\Work Space\Repo\FileTransfer\FileTransfer\assets\FileMitraLogo.png</PackageLogoSource>
   </PropertyGroup>
 </Project>

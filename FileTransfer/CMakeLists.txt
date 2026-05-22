@@ -35,6 +35,7 @@ set(PROJECT_SOURCES
     FileTransferManager.cpp
     SignalingClient.h
     SignalingClient.cpp
+    FileMitra.qrc
 )
 
 qt_add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
