@@ -1,4 +1,4 @@
-````markdown
+
 # FileMitra – Secure Peer-to-Peer File Transfer Client
 
 A modern, lightweight desktop application for secure file transfer between peers over WebRTC. FileMitra enables users to create or join transfer rooms and exchange files with end-to-end encryption in a user-friendly interface.
@@ -304,10 +304,8 @@ Before deploying, consider updating:
 2. **Server Details** – Add your actual signaling server address
 3. **Screenshots** – Add:
 
-```markdown
+
 <img width="1920" height="1080" alt="Screenshot 2026-05-21 232809" src="https://github.com/user-attachments/assets/e0be1af3-9ae2-410b-bcac-a2938aaff47d" />
-```
 
 4. **Additional Sections** – Add roadmap, changelog, or FAQ as needed
 5. **Badges** – Add build status, version, or license badges at the top
-````
