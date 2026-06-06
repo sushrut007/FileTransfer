@@ -18,6 +18,7 @@ from typing import Any
 
 import aiohttp.web
 import socketio
+import os
 
 # ---------------------------------------------------------------------------
 # Logging
