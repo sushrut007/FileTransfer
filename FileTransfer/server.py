@@ -451,7 +451,7 @@ async def on_webrtc_ice_candidate(sid: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     HOST = "0.0.0.0"
-    PORT = 3000
+    PORT = int(os.environ.get("PORT", 3000))
 
     log.info("File Transfer signalling server starting on %s:%d", HOST, PORT)
     log.info("HTTP endpoints:")
