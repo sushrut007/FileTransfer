@@ -452,7 +452,7 @@ void FileTransfer::buildUi()
 
     // Server URL
     connVBox->addWidget(mkFieldLbl(QStringLiteral("Server URL"), connGroup));
-    m_serverEdit = new QLineEdit(QStringLiteral("http://localhost:3000"), connGroup);
+    m_serverEdit = new QLineEdit(QStringLiteral("https://filemitra.sushrutmakes.qzz.io"), connGroup);
     m_serverEdit->setPlaceholderText(QStringLiteral("wss://your-server:port"));
     connVBox->addWidget(m_serverEdit);
 
