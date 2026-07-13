@@ -27,8 +27,124 @@
 #include <QFrame>
 #include <QSizePolicy>
 #include <QApplication>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
+#include <QChildEvent>
+#include <functional>
+
+namespace {
+
+class FileDropZone : public QWidget
+{
+public:
+    using FileHandler = std::function<void(const QString&)>;
+
+    explicit FileDropZone(FileHandler onFile, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , m_onFile(std::move(onFile))
+    {
+        setAcceptDrops(true);
+    }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* event) override
+    {
+        if (!canAcceptDrop(event->mimeData())) {
+            event->ignore();
+            return;
+        }
+        event->acceptProposedAction();
+        setProperty("dragActive", true);
+        style()->polish(this);
+    }
+
+    void dragMoveEvent(QDragMoveEvent* event) override
+    {
+        if (!canAcceptDrop(event->mimeData())) {
+            event->ignore();
+            return;
+        }
+        event->acceptProposedAction();
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent* event) override
+    {
+        QWidget::dragLeaveEvent(event);
+        setProperty("dragActive", false);
+        style()->polish(this);
+    }
+
+    void dropEvent(QDropEvent* event) override
+    {
+        setProperty("dragActive", false);
+        style()->polish(this);
+
+        if (!isEnabled() || !canAcceptDrop(event->mimeData())) {
+            event->ignore();
+            return;
+        }
+
+        const QString path = event->mimeData()->urls().first().toLocalFile();
+        if (!QFileInfo(path).isFile()) {
+            event->ignore();
+            return;
+        }
+
+        event->acceptProposedAction();
+        if (m_onFile)
+            m_onFile(path);
+    }
+
+    void childEvent(QChildEvent* event) override
+    {
+        QWidget::childEvent(event);
+        if (event->added() && event->child()->isWidgetType()) {
+            if (auto* child = qobject_cast<QWidget*>(event->child()))
+                child->installEventFilter(this);
+        }
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        switch (event->type()) {
+        case QEvent::DragEnter:
+            dragEnterEvent(static_cast<QDragEnterEvent*>(event));
+            return event->isAccepted();
+        case QEvent::DragMove:
+            dragMoveEvent(static_cast<QDragMoveEvent*>(event));
+            return event->isAccepted();
+        case QEvent::DragLeave:
+            dragLeaveEvent(static_cast<QDragLeaveEvent*>(event));
+            return true;
+        case QEvent::Drop:
+            dropEvent(static_cast<QDropEvent*>(event));
+            return event->isAccepted();
+        default:
+            break;
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    bool canAcceptDrop(const QMimeData* mimeData) const
+    {
+        if (!isEnabled() || mimeData == nullptr || !mimeData->hasUrls())
+            return false;
+
+        const QList<QUrl> urls = mimeData->urls();
+        return urls.size() == 1 && urls.first().isLocalFile();
+    }
+
+    FileHandler m_onFile;
+};
+
+} // namespace
 
 // ── Log-level colours (match design spec) ────────────────────────────────────
+static const char* kDefaultServerUrl = "https://filemitra.sushrutmakes.qzz.io";
+
 static const char* kColorDebug = "#8B949E";   // grey
 static const char* kColorInfo = "#22D3EE";   // cyan
 static const char* kColorWarning = "#F59E0B";   // amber
@@ -450,12 +566,6 @@ void FileTransfer::buildUi()
     connVBox->setContentsMargins(10, 10, 10, 10);
     connVBox->setSpacing(6);
 
-    // Server URL
-    connVBox->addWidget(mkFieldLbl(QStringLiteral("Server URL"), connGroup));
-    m_serverEdit = new QLineEdit(QStringLiteral("https://filemitra.sushrutmakes.qzz.io"), connGroup);
-    m_serverEdit->setPlaceholderText(QStringLiteral("wss://your-server:port"));
-    connVBox->addWidget(m_serverEdit);
-
     // Mode toggles
     auto* modeLbl = mkFieldLbl(QStringLiteral("Mode"), connGroup);
     connVBox->addWidget(modeLbl);
@@ -693,24 +803,31 @@ void FileTransfer::buildUi()
     sendVBox->addWidget(m_peerCombo);
 
     // Drop zone
-    auto* dropZone = new QWidget(sendGroup);
+    auto* dropZone = new FileDropZone(
+        [this](const QString& path) { setSelectedSendFile(path); },
+        sendGroup);
     dropZone->setObjectName(QStringLiteral("dropZone"));
+    m_dropZone = dropZone;
     dropZone->setStyleSheet(QStringLiteral(
         "QWidget#dropZone {"
         "  background-color:#0D1117;"
         "  border:1.5px dashed #30363D;"
-        "  border-radius:10px; }"));
+        "  border-radius:10px; }"
+        "QWidget#dropZone[dragActive=\"true\"] {"
+        "  border-color:#60A5FA;"
+        "  background-color:#111827; }"));
     dropZone->setMinimumHeight(80);
     dropZone->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    dropZone->setEnabled(false);
 
     auto* dropLay = new QVBoxLayout(dropZone);
     dropLay->setContentsMargins(12, 10, 12, 10);
     dropLay->setSpacing(4);
 
     // Upload icon row
-    auto* uploadIconLbl = new QLabel(QStringLiteral("\u2B06"), dropZone);
-    uploadIconLbl->setAlignment(Qt::AlignCenter);
-    uploadIconLbl->setStyleSheet(QStringLiteral(
+    m_uploadIconLbl = new QLabel(QStringLiteral("\u2B06"), dropZone);
+    m_uploadIconLbl->setAlignment(Qt::AlignCenter);
+    m_uploadIconLbl->setStyleSheet(QStringLiteral(
         "font-size:20px; color:#30363D; background:transparent; border:none;"));
 
     // File name label
@@ -735,29 +852,19 @@ void FileTransfer::buildUi()
     m_browseBtn->setMinimumHeight(30);
     m_browseBtn->setEnabled(false);
     m_browseBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_browseBtn, &QPushButton::clicked, this, [this, uploadIconLbl]() {
+    connect(m_browseBtn, &QPushButton::clicked, this, [this]() {
         const QString path = QFileDialog::getOpenFileName(
             this, QStringLiteral("Select File to Send"),
             QDir::homePath(), QStringLiteral("All Files (*)"));
-        if (path.isEmpty()) return;
-        m_pendingSendPath = path;
-        const QFileInfo fi(path);
-        m_selectedFileLabel->setText(fi.fileName());
-        m_selectedFileLabel->setObjectName(QStringLiteral("fileLabel"));
-        m_selectedFileLabel->setStyleSheet(QStringLiteral(
-            "background:transparent; border:none; color:#22C55E;"
-            "font-size:12px; font-weight:600;"));
-        uploadIconLbl->setStyleSheet(QStringLiteral(
-            "font-size:20px; color:#22C55E; background:transparent; border:none;"));
-        m_sendBtn->setEnabled(true);
-        qInfo() << "[UI] File selected for sending:" << path;
+        if (!path.isEmpty())
+            setSelectedSendFile(path);
         });
     browseRow->addStretch();
     browseRow->addWidget(orLbl);
     browseRow->addWidget(m_browseBtn);
     browseRow->addStretch();
 
-    dropLay->addWidget(uploadIconLbl);
+    dropLay->addWidget(m_uploadIconLbl);
     dropLay->addWidget(m_selectedFileLabel);
     dropLay->addLayout(browseRow);
     sendVBox->addWidget(dropZone);
@@ -960,6 +1067,8 @@ void FileTransfer::setConnectionState(bool connecting, bool connected)
     const bool canSend = connected && m_ftm != nullptr;
     m_peerCombo->setEnabled(canSend);
     m_browseBtn->setEnabled(canSend);
+    if (m_dropZone)
+        m_dropZone->setEnabled(canSend);
 
     QString dotColor, labelColor, labelText, connProp;
     if (connecting) {
@@ -983,13 +1092,10 @@ void FileTransfer::setConnectionState(bool connecting, bool connected)
         m_peerCombo->clear();
         m_peerCombo->setEnabled(false);
         m_browseBtn->setEnabled(false);
+        if (m_dropZone)
+            m_dropZone->setEnabled(false);
         m_sendBtn->setEnabled(false);
-        m_pendingSendPath.clear();
-        m_selectedFileLabel->setText(QStringLiteral("Drag & drop a file here"));
-        m_selectedFileLabel->setObjectName(QStringLiteral("fileLabelEmpty"));
-        m_selectedFileLabel->setStyleSheet(QStringLiteral(
-            "background:transparent; border:none; color:#484F58;"
-            "font-size:12px; font-style:italic;"));
+        clearSelectedSendFile();
     }
 
     m_statusLabel->setText(labelText);
@@ -1162,14 +1268,13 @@ void FileTransfer::updateTransferRow(const QString& transferId,
 // ---------------------------------------------------------------------------
 void FileTransfer::onConnectClicked()
 {
-    const QString server = m_serverEdit->text().trimmed();
     const QString password = m_passwordEdit->text();
     const bool    isCreate = m_createRadio->isChecked();
     const QString roomId = isCreate ? QString{} : m_roomIdEdit->text().trimmed();
 
-    if (server.isEmpty() || password.isEmpty()) {
+    if (password.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Missing Fields"),
-            QStringLiteral("Please fill in Server URL and Password."));
+            QStringLiteral("Please fill in the Password."));
         return;
     }
     if (!isCreate && roomId.isEmpty()) {
@@ -1182,7 +1287,7 @@ void FileTransfer::onConnectClicked()
     if (m_client) { m_client->deleteLater(); m_client = nullptr; }
 
     SignalingClient::Config cfg;
-    cfg.serverUrl = server;
+    cfg.serverUrl = QString::fromLatin1(kDefaultServerUrl);
     cfg.roomId = roomId;
     cfg.password = password;
     cfg.mode = isCreate ? SignalingClient::Mode::CreateRoom
@@ -1218,7 +1323,7 @@ void FileTransfer::onSendFileClicked()
     }
     if (m_pendingSendPath.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("No File Chosen"),
-            QStringLiteral("Click Browse\u2026 to choose a file before sending."));
+            QStringLiteral("Drag and drop a file here, or click Browse, before sending."));
         return;
     }
 
@@ -1228,12 +1333,48 @@ void FileTransfer::onSendFileClicked()
 
     m_ftm->sendFile(targetPeer, m_pendingSendPath);
 
+    clearSelectedSendFile();
+}
+
+void FileTransfer::setSelectedSendFile(const QString& path)
+{
+    const QFileInfo fi(path);
+    if (!fi.isFile())
+        return;
+
+    m_pendingSendPath = fi.absoluteFilePath();
+    m_selectedFileLabel->setText(fi.fileName());
+    m_selectedFileLabel->setObjectName(QStringLiteral("fileLabel"));
+    m_selectedFileLabel->setStyleSheet(QStringLiteral(
+        "background:transparent; border:none; color:#22C55E;"
+        "font-size:12px; font-weight:600;"));
+
+    if (m_uploadIconLbl) {
+        m_uploadIconLbl->setStyleSheet(QStringLiteral(
+            "font-size:20px; color:#22C55E; background:transparent; border:none;"));
+    }
+
+    m_sendBtn->setEnabled(m_ftm != nullptr && !m_pendingSendPath.isEmpty());
+    qInfo() << "[UI] File selected for sending:" << m_pendingSendPath;
+}
+
+void FileTransfer::clearSelectedSendFile()
+{
     m_pendingSendPath.clear();
     m_selectedFileLabel->setText(QStringLiteral("Drag & drop a file here"));
     m_selectedFileLabel->setObjectName(QStringLiteral("fileLabelEmpty"));
     m_selectedFileLabel->setStyleSheet(QStringLiteral(
         "background:transparent; border:none; color:#484F58;"
         "font-size:12px; font-style:italic;"));
+
+    if (m_uploadIconLbl) {
+        m_uploadIconLbl->setStyleSheet(QStringLiteral(
+            "font-size:20px; color:#30363D; background:transparent; border:none;"));
+    }
+
+    if (m_dropZone)
+        m_dropZone->setProperty("dragActive", false);
+
     m_sendBtn->setEnabled(false);
 }
 
@@ -1545,6 +1686,9 @@ void FileTransfer::onLogLine(LogHandler::Level level,
 void FileTransfer::appendLog(LogHandler::Level level,
     const QString& timestamp, const QString& message)
 {
+    if (level == LogHandler::Level::Debug)
+        return;
+
     // Colors from design spec
     const char* color = kColorDebug;
     const char* badge = "DBG";

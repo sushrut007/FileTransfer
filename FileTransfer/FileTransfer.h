@@ -101,6 +101,8 @@ private:
     void updatePeersLabel();
 
     void connectFtmSignals();
+    void setSelectedSendFile(const QString& path);
+    void clearSelectedSendFile();
     void appendLog(LogHandler::Level level,
         const QString& timestamp,
         const QString& message);
@@ -113,7 +115,6 @@ private:
     int  findTransferRow(const QString& transferId) const;
 
     // ── Connection panel ──────────────────────────────────────────────────
-    QLineEdit* m_serverEdit = nullptr;
     QRadioButton* m_joinRadio = nullptr;
     QRadioButton* m_createRadio = nullptr;
     QWidget* m_joinWidget = nullptr;
@@ -136,6 +137,8 @@ private:
     QLabel* m_selectedFileLabel = nullptr;
     QPushButton* m_browseBtn = nullptr;
     QPushButton* m_sendBtn = nullptr;
+    QWidget* m_dropZone = nullptr;
+    QLabel* m_uploadIconLbl = nullptr;
     QString       m_pendingSendPath;
 
     // ── Transfer panel ────────────────────────────────────────────────────

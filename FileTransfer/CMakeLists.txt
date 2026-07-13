@@ -23,6 +23,8 @@ qt_standard_project_setup()
 
 set(PROJECT_SOURCES
     main.cpp
+    FirstRunInstaller.h
+    FirstRunInstaller.cpp
     FileTransfer.ui
     FileTransfer.h
     FileTransfer.cpp
@@ -40,6 +42,10 @@ set(PROJECT_SOURCES
 
 qt_add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
+if(WIN32)
+    target_sources(${PROJECT_NAME} PRIVATE FileTransfer.rc)
+endif()
+
 set_target_properties(${PROJECT_NAME}
     PROPERTIES
         WIN32_EXECUTABLE TRUE
@@ -52,6 +58,10 @@ target_link_libraries(${PROJECT_NAME}
         Qt::Widgets
         Qt::WebSockets
 )
+
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32 ole32)
+endif()
 
 # ================================
 # libdatachannel integration
